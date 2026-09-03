@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Industrial Reorder Dashboard</title>
+    <!-- Plotly.js -->
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="dashboard">
+        <header>
+            <h1>Industrial Procurement Engine</h1>
+            <div class="search-container">
+                <input type="text" id="skuInput" value="SKU_001" placeholder="Enter SKU ID...">
+                <button onclick="fetchProcurementData()">Analyze</button>
+            </div>
+        </header>
+
+        <main>
+            <div class="metrics-grid">
+                <div class="metric-card">
+                    <h3>Current Inventory</h3>
+                    <p id="valInventory">--</p>
+                    <span class="label">Units on hand</span>
+                </div>
+                <div class="metric-card">
+                    <h3>Reorder Point</h3>
+                    <p id="valROP">--</p>
+                    <span class="label">Trigger threshold</span>
+                </div>
+                <div class="metric-card">
+                    <h3>Safety Stock</h3>
+                    <p id="valSafetyStock">--</p>
+                    <span class="label">Buffer stock</span>
+                </div>
+                <div class="metric-card highlight-card" id="actionCard">
+                    <h3>Recommended Action</h3>
+                    <p id="valAction">--</p>
+                    <span class="label" id="valCost">Estimated Cost: $0</span>
+                </div>
+            </div>
+
+            <div class="status-banner" id="statusBanner">
+                <div class="urgency-badge" id="urgencyBadge">STATUS: UNKNOWN</div>
+                <p id="statusMessage">Enter a SKU to begin analysis.</p>
+            </div>
+
+            <div class="chart-container">
+                <div id="forecastPlot" style="width: 100%; height: 500px;"></div>
+            </div>
+        </main>
+    </div>
+    
+    <script src="/static/script.js"></script>
+</body>
+</html>
