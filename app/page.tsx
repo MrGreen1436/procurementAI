@@ -237,7 +237,7 @@ export default function DashboardPage() {
             <CardHeader className="flex flex-row items-center justify-between pb-2">
               <CardTitle className="text-base font-semibold">Inventory Forecast vs Actual</CardTitle>
               <div className="w-56">
-                <Select value={selectedSku} onValueChange={setSelectedSku}>
+                <Select value={selectedSku} onValueChange={(val) => val && setSelectedSku(val)}>
                   <SelectTrigger className="h-8 text-xs">
                     <SelectValue placeholder="Select SKU" />
                   </SelectTrigger>
@@ -347,7 +347,7 @@ export default function DashboardPage() {
             )}
           </CardTitle>
           <div className="w-44">
-            <Select value={alertFilter} onValueChange={setAlertFilter}>
+            <Select value={alertFilter} onValueChange={(val) => val && setAlertFilter(val)}>
               <SelectTrigger className="h-8 text-xs">
                 <SelectValue placeholder="Filter" />
               </SelectTrigger>

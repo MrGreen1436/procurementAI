@@ -276,7 +276,7 @@ export default function POQueuePage() {
       <div className="flex flex-wrap gap-3 items-center">
         <span className="text-sm font-medium text-muted-foreground">Filter by:</span>
         <div className="w-44">
-          <Select value={riskFilter} onValueChange={setRiskFilter}>
+          <Select value={riskFilter} onValueChange={(val) => val && setRiskFilter(val)}>
             <SelectTrigger>
               <SelectValue placeholder="Risk Level" />
             </SelectTrigger>
@@ -289,7 +289,7 @@ export default function POQueuePage() {
           </Select>
         </div>
         <div className="w-44">
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
+          <Select value={statusFilter} onValueChange={(val) => val && setStatusFilter(val)}>
             <SelectTrigger>
               <SelectValue placeholder="Status" />
             </SelectTrigger>
