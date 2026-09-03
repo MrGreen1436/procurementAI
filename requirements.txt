@@ -1,0 +1,9 @@
+pandas
+numpy
+matplotlib
+xgboost
+scikit-learn
+prophet
+statsmodels
+fastapi
+uvicorn

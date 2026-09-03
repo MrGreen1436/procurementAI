@@ -1,0 +1,8 @@
+node_modules/
+.next/
+__pycache__/
+*.pyc
+demand_sample.tmp.csv
+uploaded_dataset.csv
+.env
+.env.local
