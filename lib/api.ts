@@ -6,7 +6,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export async function fetchKPIs(): Promise<KPISummary> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/kpis");
+    const res = await fetch(`http://127.0.0.1:8000/kpi?t=${Date.now()}`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchKPIs failed, falling back to mock", e);
@@ -17,7 +17,7 @@ export async function fetchKPIs(): Promise<KPISummary> {
 
 export async function fetchAlerts(): Promise<Alert[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/alerts");
+    const res = await fetch(`http://127.0.0.1:8000/risk/alerts?t=${Date.now()}`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchAlerts failed, falling back to mock", e);
@@ -28,7 +28,7 @@ export async function fetchAlerts(): Promise<Alert[]> {
 
 export async function fetchInventoryHistory(): Promise<InventoryPoint[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/inventory-history");
+    const res = await fetch(`http://127.0.0.1:8000/inventory-history?t=${Date.now()}`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchInventoryHistory failed, falling back to mock", e);
@@ -39,7 +39,7 @@ export async function fetchInventoryHistory(): Promise<InventoryPoint[]> {
 
 export async function fetchPOs(): Promise<PurchaseOrder[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/agent/pos-frontend");
+    const res = await fetch(`http://127.0.0.1:8000/agent/pos-frontend?t=${Date.now()}`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchPOs failed, falling back to mock", e);

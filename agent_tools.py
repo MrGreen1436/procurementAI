@@ -51,10 +51,12 @@ except Exception as e:
 def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
     """Return demand forecast for a SKU over the given horizon."""
     
+    active_csv = "uploaded_dataset.csv" if os.path.exists("uploaded_dataset.csv") else "demand_sample.csv"
+    
     # Try using XGBoost model
-    if _xgboost_model is not None and os.path.exists("demand_sample.csv"):
+    if _xgboost_model is not None and os.path.exists(active_csv):
         try:
-            df = pd.read_csv("demand_sample.csv")
+            df = pd.read_csv(active_csv)
             sku_data = df[df['sku_id'] == sku_id]
             if not sku_data.empty:
                 last_price = float(sku_data['price'].iloc[-1])

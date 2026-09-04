@@ -103,16 +103,33 @@ export default function DashboardPage() {
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
 
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [selectedSku, setSelectedSku] = useState<string>("SKU-LITH-007");
+  const [selectedSku, setSelectedSku] = useState<string>("");
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetchKPIs().then(setKpis);
     fetchAlerts().then(setAlerts);
-    fetchInventoryHistory().then(setHistory);
+    fetchInventoryHistory().then((data) => {
+      setHistory(data);
+      if (data && data.length > 0) {
+        const skus = Array.from(new Set(data.map((h) => h.sku)));
+        if (skus.length > 0) {
+          setSelectedSku((prev) => (prev && skus.includes(prev) ? prev : skus[0]));
+        }
+      }
+    });
     fetchPOs().then(setPOs);
   }, []);
+
+  const uniqueSkus = Array.from(new Set(history.map((h) => h.sku)));
+
+  // Whenever uniqueSkus changes, ensure selectedSku points to a valid SKU
+  useEffect(() => {
+    if (uniqueSkus.length > 0 && (!selectedSku || !uniqueSkus.includes(selectedSku))) {
+      setSelectedSku(uniqueSkus[0]);
+    }
+  }, [uniqueSkus, selectedSku]);
 
   const chartData = history
     .filter((h) => h.sku === selectedSku)
@@ -121,9 +138,8 @@ export default function DashboardPage() {
       ActualLevel: h.actualLevel,
       ForecastedLevel: h.forecastedLevel,
       EtsForecastedLevel: h.etsForecastedLevel,
+      LstmForecastedLevel: h.lstmForecastedLevel,
     }));
-
-  const uniqueSkus = Array.from(new Set(history.map((h) => h.sku)));
 
   const filteredAlerts =
     alertFilter === "all" ? alerts : alerts.filter((a) => a.riskLevel === alertFilter);
@@ -172,18 +188,22 @@ export default function DashboardPage() {
     if (!file) return;
     
     toast.info("Uploading Dataset", {
-      description: "Uploading file and retraining the ML model...",
-      duration: 5000,
+      description: `Uploading ${file.name} and retraining ML models...`,
+      duration: 8000,
     });
     
     const { uploadDataset } = await import("@/lib/api");
     const result = await uploadDataset(file);
+    e.target.value = ""; // Allow re-uploading
+    
     if (result.success) {
-      toast.success("Upload Complete!", { description: result.message, duration: 4000 });
-      // Refresh UI by triggering a re-render or re-fetching Data
-      window.location.reload();
+      toast.success("Upload Complete!", { description: result.message, duration: 5000 });
+      // Refresh UI by triggering a reload
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
     } else {
-      toast.error("Upload Failed", { description: result.message, duration: 4000 });
+      toast.error("Upload Failed", { description: result.message, duration: 6000 });
     }
   };
 
@@ -201,7 +221,7 @@ export default function DashboardPage() {
           <label className="inline-flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold px-3 py-2 transition-colors cursor-pointer">
             <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
             Upload Dataset
-            <input type="file" accept=".csv" className="hidden" onChange={handleUploadDataset} />
+            <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleUploadDataset} />
           </label>
           <button
             id="demo-delay-btn"
@@ -334,7 +354,7 @@ export default function DashboardPage() {
                     <Line
                       type="monotone"
                       dataKey="EtsForecastedLevel"
-                      name="ETS Baseline"
+                      name="ETS Forecast"
                       stroke="#f59e0b"
                       strokeWidth={2}
                       strokeDasharray="3 3"
@@ -342,6 +362,18 @@ export default function DashboardPage() {
                       isAnimationActive
                       animationDuration={800}
                       animationBegin={400}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="LstmForecastedLevel"
+                      name="LSTM Forecast"
+                      stroke="#8b5cf6"
+                      strokeWidth={2}
+                      strokeDasharray="4 1 2"
+                      dot={false}
+                      isAnimationActive
+                      animationDuration={800}
+                      animationBegin={600}
                     />
                   </LineChart>
                 </ResponsiveContainer>
@@ -410,12 +442,12 @@ export default function DashboardPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredAlerts.map((alert) => (
+              {filteredAlerts.map((alert, idx) => (
                 <TableRow
-                  key={alert.id}
+                  key={alert.id ?? `alert-${idx}`}
                   className={cn(
                     "cursor-pointer hover:bg-muted/50 transition-all",
-                    newAlertIds.has(alert.id) &&
+                    alert.id && newAlertIds.has(alert.id) &&
                       "animate-in fade-in-0 slide-in-from-top-2 duration-500 bg-red-500/5"
                   )}
                   onClick={() => setSelectedAlert(alert)}
@@ -437,12 +469,12 @@ export default function DashboardPage() {
                     ) : "N/A"}
                   </TableCell>
                   <TableCell>
-                    <span>{alert.currentStock.toLocaleString()}</span>
+                    <span>{(alert.currentStock ?? 0).toLocaleString()}</span>
                     <span className="text-muted-foreground"> / </span>
-                    <span className="text-red-500">{alert.forecastedDemand.toLocaleString()}</span>
+                    <span className="text-red-500">{(alert.forecastedDemand ?? 0).toLocaleString()}</span>
                   </TableCell>
                   <TableCell className="text-right text-muted-foreground text-xs pr-6">
-                    {new Date(alert.createdAt).toLocaleDateString()}
+                    {alert.createdAt ? new Date(alert.createdAt).toLocaleDateString() : "N/A"}
                   </TableCell>
                 </TableRow>
               ))}

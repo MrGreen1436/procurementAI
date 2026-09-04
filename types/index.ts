@@ -42,6 +42,7 @@ export interface InventoryPoint {
   actualLevel: number | null;
   forecastedLevel: number;
   etsForecastedLevel?: number;
+  lstmForecastedLevel?: number;
 }
 
 export interface QueryResponse {
