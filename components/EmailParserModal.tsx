@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { parseSupplierEmail } from "@/lib/api";
@@ -53,7 +53,7 @@ ChipTech Fab Support`,
 
 interface EmailParserModalProps {
   onEmailParsed?: (result: any) => void;
-  trigger?: React.ReactNode;
+  trigger?: React.ReactElement;
 }
 
 export function EmailParserModal({ onEmailParsed, trigger }: EmailParserModalProps) {
@@ -72,7 +72,7 @@ export function EmailParserModal({ onEmailParsed, trigger }: EmailParserModalPro
       const res = await parseSupplierEmail(emailText);
       setParsedResult(res);
       toast.success("Delay Email Processed!", {
-        description: `Extracted ${res.delay_days}d delay for ${res.sku_id || "SKU"}. High-risk alert generated and replenishment triggered.`,
+        description: `Saved supplier-delay record #${res.persisted_email_id}. Extracted ${res.delay_days}d delay for ${res.sku_id || "SKU"}.`,
       });
       if (onEmailParsed) {
         try {
@@ -92,14 +92,14 @@ export function EmailParserModal({ onEmailParsed, trigger }: EmailParserModalPro
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        {trigger || (
+      <DialogTrigger
+        render={trigger || (
           <Button variant="outline" className="gap-2">
             <Mail className="h-4 w-4 text-primary" />
             <span>Simulate Delay Email</span>
           </Button>
         )}
-      </DialogTrigger>
+      />
       <DialogContent className="sm:max-w-[620px] max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-lg">

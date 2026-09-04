@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useState } from "react";
 import { runScenario } from "@/lib/api";
@@ -17,8 +17,9 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RealtimeStatusBadge } from "@/components/RealtimeStatusBadge";
+import { ForecastComparisonChart, ForecastComparisonPoint } from "@/components/ForecastComparisonChart";
 
-/* ─── Helpers ─────────────────────────────────────────── */
+/* ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 const formatCurrency = (val: number) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -27,7 +28,7 @@ const formatCurrency = (val: number) =>
     signDisplay: "always",
   }).format(val);
 
-/* ─── Slider ──────────────────────────────────────────── */
+/* ΓöÇΓöÇΓöÇ Slider ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 function ScenarioSlider({
   id,
   label,
@@ -124,7 +125,7 @@ function ScenarioSlider({
   );
 }
 
-/* ─── Results Panel ───────────────────────────────────── */
+/* ΓöÇΓöÇΓöÇ Results Panel ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 function ResultsPanel({
   result,
   baseline,
@@ -135,6 +136,33 @@ function ResultsPanel({
   const costPositive = result.costImpact > 0;
   const costNeutral = result.costImpact === 0;
   const CostIcon = costPositive ? TrendingUp : costNeutral ? Minus : TrendingDown;
+
+  const chartData: ForecastComparisonPoint[] = [];
+  for (const detail of result.skuDetails) {
+    const models = [
+      ["xgboost", "xgboostOriginal", "xgboostSimulated"],
+      ["lstm", "lstmOriginal", "lstmSimulated"],
+      ["ets", "etsOriginal", "etsSimulated"],
+    ] as const;
+    for (const [model, originalKey, simulatedKey] of models) {
+      const original = detail.baselineForecasts?.[model] ?? [];
+      const simulated = detail.simulatedForecasts?.[model] ?? [];
+      original.forEach((point, index) => {
+        const current = chartData[index] ?? {
+          date: point.date,
+          xgboostOriginal: 0,
+          xgboostSimulated: 0,
+          lstmOriginal: 0,
+          lstmSimulated: 0,
+          etsOriginal: 0,
+          etsSimulated: 0,
+        };
+        current[originalKey] += point.value;
+        current[simulatedKey] += simulated[index]?.value ?? 0;
+        chartData[index] = current;
+      });
+    }
+  }
 
   return (
     <div className="space-y-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
@@ -155,11 +183,11 @@ function ResultsPanel({
             <div className="text-xs text-muted-foreground mt-1">
               {result.newStockoutCount > baseline ? (
                 <span className="text-red-500">
-                  ▲ {result.newStockoutCount - baseline} more than current
+                  Γû▓ {result.newStockoutCount - baseline} more than current
                 </span>
               ) : result.newStockoutCount < baseline ? (
                 <span className="text-emerald-500">
-                  ▼ {baseline - result.newStockoutCount} fewer than current
+                  Γû╝ {baseline - result.newStockoutCount} fewer than current
                 </span>
               ) : (
                 <span>No change from current</span>
@@ -236,11 +264,20 @@ function ResultsPanel({
           No additional SKUs affected under this scenario
         </div>
       )}
+
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold">Forecast Comparison</h2>
+        <Card className="shadow-sm">
+          <CardContent>
+            <ForecastComparisonChart data={chartData} />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
 
-/* ─── Page ────────────────────────────────────────────── */
+/* ΓöÇΓöÇΓöÇ Page ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 const DEFAULT_INPUT: ScenarioInput = {
   leadTimeVariabilityPct: 0,
   demandIncreasePct: 0,
@@ -251,13 +288,18 @@ export default function SimulatorPage() {
   const [result, setResult] = useState<ScenarioResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [hasRun, setHasRun] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleRun = async () => {
     setLoading(true);
     setHasRun(true);
+    setError(null);
     try {
       const res = await runScenario(input);
       setResult(res);
+    } catch {
+      setResult(null);
+      setError("Unable to run the backend scenario. Start the FastAPI service and try again.");
     } finally {
       setLoading(false);
     }
@@ -267,6 +309,7 @@ export default function SimulatorPage() {
     setInput(DEFAULT_INPUT);
     setResult(null);
     setHasRun(false);
+    setError(null);
   };
 
   const isDirty =
@@ -326,7 +369,7 @@ export default function SimulatorPage() {
                 {input.leadTimeVariabilityPct > 0 ? "+" : ""}{input.leadTimeVariabilityPct}%
               </span>
             </span>
-            <span className="text-muted-foreground">·</span>
+            <span className="text-muted-foreground">┬╖</span>
             <span>
               Demand{" "}
               <span className={cn("font-semibold", input.demandIncreasePct > 0 ? "text-red-500" : input.demandIncreasePct < 0 ? "text-emerald-500" : "")}>
@@ -346,7 +389,7 @@ export default function SimulatorPage() {
             >
               {loading ? (
                 <>
-                  <Loader2 className="h-4 w-4 animate-spin" /> Running…
+                  <Loader2 className="h-4 w-4 animate-spin" /> RunningΓÇª
                 </>
               ) : (
                 <>
@@ -372,12 +415,18 @@ export default function SimulatorPage() {
       {loading && (
         <div className="flex items-center justify-center gap-3 py-12 text-muted-foreground">
           <Loader2 className="h-5 w-5 animate-spin" />
-          <span className="text-sm">Running scenario model…</span>
+          <span className="text-sm">Running scenario modelΓÇª</span>
         </div>
       )}
 
       {!loading && result && (
         <ResultsPanel result={result} baseline={6} />
+      )}
+
+      {!loading && error && (
+        <div role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-400">
+          {error}
+        </div>
       )}
 
       {!loading && !result && !hasRun && (

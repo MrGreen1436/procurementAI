@@ -1,29 +1,15 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-dist/
-build/
-*.egg
-.env
-*.db
-*.sqlite
-*.sqlite3
-model.pkl
-
-# Node / Next.js
 node_modules/
 .next/
-out/
-.vercel/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Misc
-.DS_Store
-Thumbs.db
-*.log
+__pycache__/
+*.pyc
+demand_sample.tmp.csv
+uploaded_dataset.csv
+uploaded_dataset_raw.csv
+retail_enriched_last.csv
+*.db
+procurement.db
+.env
+.env.local
+cloudflared.exe
+twillio-voice/
+twilio-voice/node_modules/

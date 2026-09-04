@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
+import { Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { Sidebar } from "@/components/sidebar";
 import { Toaster } from "sonner";
+
+const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "ProcureAI Dashboard",
@@ -16,7 +19,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="antialiased min-h-screen flex flex-col md:flex-row bg-background text-foreground">
+      <body className={`${inter.className} antialiased min-h-screen flex flex-col md:flex-row bg-background text-foreground`}>
         <ThemeProvider
           attribute="class"
           defaultTheme="system"

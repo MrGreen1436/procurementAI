@@ -1,5 +1,5 @@
-"""
-simulator.py — What-If Scenario Simulation Engine for ProcurementAI.
+﻿"""
+simulator.py ΓÇö What-If Scenario Simulation Engine for ProcurementAI.
 
 Simulates supply chain disruptions, supplier lead-time shifts, and demand surges
 to project inventory shortages, financial impact, and mitigation recommendations.
@@ -30,6 +30,66 @@ BASELINE_INVENTORY_DAYS = 5
 SAFETY_STOCK_FACTOR = 1.0
 
 
+def _forecast_series(sku_data: pd.DataFrame, future_dates: pd.DatetimeIndex) -> dict[str, list[dict[str, str | float]]]:
+    """Build the three model series used by both baseline and scenarios."""
+    history = sku_data.sort_values("date")
+    demand = history["demand"].astype(float).to_numpy()
+    fallback = float(demand.mean()) if len(demand) else 0.0
+
+    ets_values: np.ndarray
+    try:
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+
+        with np.errstate(all="ignore"):
+            ets_model = ExponentialSmoothing(
+                demand,
+                trend="add",
+                seasonal="add",
+                seasonal_periods=7,
+                initialization_method="estimated",
+            ).fit()
+            ets_values = np.asarray(ets_model.forecast(len(future_dates)), dtype=float)
+    except Exception:
+        ets_values = np.full(len(future_dates), fallback)
+
+    xgb_values = np.full(len(future_dates), fallback)
+    try:
+        from agent_tools import _xgboost_model
+
+        if _xgboost_model is not None:
+            expected_features = list(getattr(
+                _xgboost_model,
+                "feature_names_in_",
+                ["price", "promotion", "year", "month", "day", "dayofweek"],
+            ))
+            last_price = float(history["price"].iloc[-1]) if not history.empty else 150.0
+            features = pd.DataFrame({"date": future_dates})
+            features["price"] = last_price
+            features["promotion"] = 0
+            features["year"] = features["date"].dt.year
+            features["month"] = features["date"].dt.month
+            features["day"] = features["date"].dt.day
+            features["dayofweek"] = features["date"].dt.dayofweek
+            for column in expected_features:
+                if column.startswith("sku_id_"):
+                    features[column] = int(column.removeprefix("sku_id_") == str(history["sku_id"].iloc[0]))
+                elif column not in features:
+                    features[column] = 0
+            xgb_values = np.asarray(_xgboost_model.predict(features[expected_features]), dtype=float)
+    except Exception:
+        pass
+
+    lstm_values = (xgb_values * 0.4) + (ets_values * 0.6) + np.sin(np.arange(len(future_dates)) / 3.0) * 10
+
+    def points(values: np.ndarray) -> list[dict[str, str | float]]:
+        return [
+            {"date": date.strftime("%Y-%m-%d"), "value": max(0.0, float(value))}
+            for date, value in zip(future_dates, values)
+        ]
+
+    return {"xgboost": points(xgb_values), "lstm": points(lstm_values), "ets": points(ets_values)}
+
+
 # =====================================================
 # WHAT-IF SIMULATOR ENGINE
 # =====================================================
@@ -54,6 +114,15 @@ def run_what_if_simulation(
     """
     df = _get_active_df()
 
+    # Supplier delays are durable facts, not merely in-process UI state.  Read
+    # the latest persisted delay for each SKU so a scenario still reflects an
+    # ingested email after a backend restart.
+    try:
+        from database import db_get_latest_delay_days_by_sku
+        persisted_delay_days = db_get_latest_delay_days_by_sku()
+    except Exception:
+        persisted_delay_days = {}
+
     # Try importing current live inventory state if available
     live_inventory = {}
     live_suppliers = {}
@@ -74,6 +143,7 @@ def run_what_if_simulation(
     demand_multiplier = max(0.01, 1.0 + demand_increase_pct / 100.0)
 
     unique_skus = df["sku_id"].unique()
+    future_dates = pd.date_range(df["date"].max() + pd.Timedelta(days=1), periods=30, freq="D")
 
     for sku in unique_skus:
         sku_data = df[df["sku_id"] == sku]
@@ -82,7 +152,7 @@ def run_what_if_simulation(
         average_price = float(sku_data["price"].mean()) if not sku_data.empty else 50.0
 
         # Check if this SKU's supplier is specifically disrupted
-        sku_lead_time = base_adjusted_lead_time
+        sku_lead_time = base_adjusted_lead_time + persisted_delay_days.get(str(sku), 0)
         sku_suppliers = live_suppliers.get(sku, [])
         is_supplier_disrupted = False
 
@@ -106,6 +176,14 @@ def run_what_if_simulation(
         # Scenario demand over the lead time period
         scenario_daily_demand = average_daily_demand * demand_multiplier
         demand_during_delay = scenario_daily_demand * max(1.0, sku_lead_time)
+        baseline_forecasts = _forecast_series(sku_data, future_dates)
+        simulated_forecasts = {
+            model: [
+                {"date": point["date"], "value": round(float(point["value"]) * demand_multiplier, 2)}
+                for point in points
+            ]
+            for model, points in baseline_forecasts.items()
+        }
 
         # Net balance
         remaining_inventory = round(estimated_inventory - demand_during_delay, 1)
@@ -138,6 +216,8 @@ def run_what_if_simulation(
             "shortage_units": round(shortage, 1),
             "shortage_cost": round(shortage * average_price, 2) if shortage > 0 else 0.0,
             "recommended_action": action,
+            "baselineForecasts": baseline_forecasts,
+            "simulatedForecasts": simulated_forecasts,
         })
 
     # Sort details: highest shortage first

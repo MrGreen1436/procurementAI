@@ -33,14 +33,29 @@ def load_state_from_csv(csv_path: str = "demand_sample.csv"):
         df = df.sort_values('date')
         unique_skus = df['sku_id'].unique()
 
+        if 'price' not in df.columns:
+            df['price'] = 100.0
+        else:
+            df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(100.0)
+
+        if 'demand' not in df.columns:
+            df['demand'] = 50.0
+        else:
+            df['demand'] = pd.to_numeric(df['demand'], errors='coerce').fillna(0.0)
+
         for sku in unique_skus:
             sku_df = df[df['sku_id'] == sku]
-            avg_daily_demand = float(sku_df['demand'].mean())
-            avg_price        = float(sku_df['price'].mean())
+            avg_daily_demand = float(sku_df['demand'].mean()) if not sku_df.empty else 10.0
+            if pd.isna(avg_daily_demand) or avg_daily_demand <= 0:
+                avg_daily_demand = 10.0
+
+            avg_price = float(sku_df['price'].mean()) if not sku_df.empty else 100.0
+            if pd.isna(avg_price) or avg_price <= 0:
+                avg_price = 100.0
 
             # current_stock = last 7 days average demand (proxy for current warehouse level)
             last_7 = sku_df.tail(7)['demand'].sum()
-            current_stock = max(1, int(last_7))
+            current_stock = max(1, int(last_7)) if not pd.isna(last_7) else 50
 
             # reorder_point = 14-day demand (order when you have 2 weeks of stock left)
             reorder_point = max(1, int(avg_daily_demand * 14))
@@ -54,7 +69,10 @@ def load_state_from_csv(csv_path: str = "demand_sample.csv"):
 
             # Supplier data: use real avg price from CSV, sensible lead times
             lead_time_days = 14
-            reliability = round(max(0.70, min(0.99, 1.0 - (sku_df['demand'].std() / (avg_daily_demand + 1)) * 0.1)), 2)
+            std_demand = sku_df['demand'].std() if len(sku_df) > 1 else 0
+            if pd.isna(std_demand):
+                std_demand = 0
+            reliability = round(max(0.70, min(0.99, 1.0 - (std_demand / (avg_daily_demand + 1)) * 0.1)), 2)
             MOCK_SUPPLIERS[sku] = [
                 Supplier(
                     supplier_id=f"SUP-{abs(hash(sku)) % 90 + 10}",
@@ -85,7 +103,7 @@ load_state_from_csv()
 RISK_ALERTS: list[RiskAlert] = [
     RiskAlert(
         alert_id="ALERT-001",
-        sku_id="SKU_001",
+        sku_id="SKU-001",
         site_id="SITE-A",
         risk_level="high",
         reason="Current stock (120) below reorder point (200); forecast demand rising",
@@ -93,10 +111,15 @@ RISK_ALERTS: list[RiskAlert] = [
     ),
     RiskAlert(
         alert_id="ALERT-002",
-        sku_id="SKU_003",
+        sku_id="SKU-003",
         site_id="SITE-C",
         risk_level="high",
         reason="Current stock (30) critically below reorder point (100)",
         predicted_stockout_date=date.today() + timedelta(days=4),
     ),
 ]
+
+# ---------------------------------------------------------------
+# Supplier Outreach state (from shashi — tracks live call status)
+# ---------------------------------------------------------------
+SUPPLIER_OUTREACH_DATA: dict = {}

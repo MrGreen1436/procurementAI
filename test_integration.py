@@ -43,7 +43,7 @@ print("\n2. Inventory")
 r = requests.get(f"{BASE}/inventory/SKU-001")
 check("GET /inventory/SKU-001", r)
 r = requests.get(f"{BASE}/inventory/INVALID-SKU")
-check("GET /inventory/INVALID-SKU -> 404", r, expected_status=404)
+check("GET /inventory/INVALID-SKU → 404", r, expected_status=404)
 
 # 3. Forecast
 print("\n3. Forecast")
@@ -69,7 +69,7 @@ data = check("POST /agent/run", r, key="created_pos")
 pos = data.get("created_pos", [])
 print(f"         Mode: {data.get('mode', 'unknown')} | POs created: {len(pos)}")
 for po in pos:
-    print(f"           -> {po['po_id']} | {po['status']} | ${po['total_cost']:.2f} | by={po.get('generated_by','?')}")
+    print(f"           → {po['po_id']} | {po['status']} | ${po['total_cost']:.2f} | by={po.get('generated_by','?')}")
 
 # 7. List POs
 print("\n7. List POs")
@@ -91,7 +91,7 @@ else:
     print("  [SKIP] No POs available to approve/reject")
 
 r = requests.post(f"{BASE}/agent/approve/PO-DOESNOTEXIST")
-check("POST /agent/approve/INVALID -> 404", r, expected_status=404)
+check("POST /agent/approve/INVALID → 404", r, expected_status=404)
 
 # 9. Natural language query
 print("\n9. Natural Language Query")

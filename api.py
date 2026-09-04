@@ -1,10 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-try:
-    import plotly.graph_objs as go
-except ImportError:
-    go = None
+import plotly.graph_objs as go
 import pandas as pd
 import numpy as np
 import os

@@ -1,320 +1,345 @@
 """
-agent_tools.py — Tool functions and Gemini function declarations for Procurement Agent.
-Provides inventory, forecast, supplier lookups, PO creation, and email parsing.
+agent_tools.py — LLM-callable tool functions + Gemini function-calling schemas.
+
+Uses the NEW google-genai SDK (google.genai) — not the deprecated google-generativeai.
+
+HOW IT WORKS:
+  1. Python functions (get_inventory, get_forecast, etc.) read/write store.py.
+  2. TOOL_DECLARATIONS is a list of genai.types.FunctionDeclaration objects
+     describing each tool to the Gemini model.
+  3. dispatch_tool() maps the string name from Gemini → Python function.
 """
 
-import os
 import uuid
 import logging
-from datetime import date, datetime
+from datetime import date
+from typing import Any
+
+from google import genai
+from google.genai import types as genai_types
+
+from models import (
+    InventoryItem, ForecastResult, Supplier, RiskAlert,
+    PurchaseOrder, POLineItem,
+)
+from store import MOCK_INVENTORY, MOCK_SUPPLIERS, MOCK_POS, RISK_ALERTS
+
+logger = logging.getLogger(__name__)
+# Tool implementation functions
+def get_inventory(sku_id: str) -> dict:
+    """Return current inventory for a SKU."""
+    item = MOCK_INVENTORY.get(sku_id)
+    if not item:
+        return {"error": f"No inventory record for SKU '{sku_id}'"}
+    return item.model_dump(mode="json")
+
+
+import joblib
 import pandas as pd
+from datetime import date, timedelta
+import os
 import numpy as np
 
-logger = logging.getLogger("agent_tools")
-
-# Try importing google.genai types
+# Load XGBoost model if it exists
 try:
-    from google.genai import types as genai_types
-except ImportError:
-    genai_types = None
-
-from store import MOCK_INVENTORY, MOCK_SUPPLIERS, MOCK_POS, RISK_ALERTS
-from models import PurchaseOrder, POLineItem, RiskAlert, InventoryItem, Supplier
-
-# XGBoost model cache
-_xgboost_model = None
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_MODEL_PATH = os.path.join(_BASE_DIR, "model.pkl")
-
-def _load_model():
-    global _xgboost_model
-    if _xgboost_model is None and os.path.exists(_MODEL_PATH):
-        try:
-            import joblib
-            _xgboost_model = joblib.load(_MODEL_PATH)
-            logger.info("Loaded XGBoost model from %s", _MODEL_PATH)
-        except Exception as e:
-            logger.warning("Could not load XGBoost model: %s", e)
-            _xgboost_model = None
-    return _xgboost_model
-
-_load_model()
-
-
-def get_inventory(sku_id: str) -> dict:
-    """Return current stock level and reorder point for a given sku_id."""
-    inv = MOCK_INVENTORY.get(sku_id)
-    if not inv:
-        return {"error": f"SKU '{sku_id}' not found in inventory."}
-    return {
-        "sku_id": inv.sku_id,
-        "site_id": inv.site_id,
-        "current_stock": inv.current_stock,
-        "reorder_point": inv.reorder_point,
-    }
-
+    _xgboost_model = joblib.load("model.pkl")
+    logger.info("Loaded model.pkl successfully.")
+except Exception as e:
+    _xgboost_model = None
+    logger.warning("Could not load model.pkl, using fallback. Error: %s", e)
 
 def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
-    """Return predicted demand over horizon_days for a given sku_id using ML or historical proxy."""
-    model = _load_model()
-    csv_path = os.path.join(_BASE_DIR, "demand_sample.csv")
-    if os.path.exists(os.path.join(_BASE_DIR, "uploaded_dataset.csv")):
-        csv_path = os.path.join(_BASE_DIR, "uploaded_dataset.csv")
-
-    avg_daily_demand = 15.0
-    demand_std = 4.0
-
-    if os.path.exists(csv_path):
+    """Return demand forecast for a SKU over the given horizon."""
+    
+    active_csv = "uploaded_dataset.csv" if os.path.exists("uploaded_dataset.csv") else "demand_sample.csv"
+    
+    # Try using XGBoost model
+    if _xgboost_model is not None and os.path.exists(active_csv):
         try:
-            df = pd.read_csv(csv_path)
-            sku_df = df[df["sku_id"] == sku_id]
-            if not sku_df.empty:
-                avg_daily_demand = float(sku_df["demand"].mean())
-                demand_std = float(sku_df["demand"].std()) if not np.isnan(sku_df["demand"].std()) else 3.0
+            df = pd.read_csv(active_csv)
+            sku_data = df[df['sku_id'] == sku_id]
+            if not sku_data.empty:
+                last_price = float(sku_data['price'].iloc[-1])
+            else:
+                last_price = 150.0
+                
+            future_dates = [date.today() + timedelta(days=i) for i in range(horizon_days)]
+            
+            # Construct features
+            features = pd.DataFrame({'date': future_dates})
+            features['date'] = pd.to_datetime(features['date'])
+            features['price'] = last_price
+            features['promotion'] = 0
+            features['year'] = features['date'].dt.year
+            features['month'] = features['date'].dt.month
+            features['day'] = features['date'].dt.day
+            features['dayofweek'] = features['date'].dt.dayofweek
+            
+            # Dynamically fetch the expected feature columns
+            try:
+                expected_features = list(_xgboost_model.feature_names_in_)
+            except AttributeError:
+                expected_features = ['price', 'promotion', 'year', 'month', 'day', 'dayofweek'] # Fallback
+                
+            # Add dynamic SKU one-hot encoding based on what the model expects
+            for col in expected_features:
+                if col.startswith('sku_id_'):
+                    expected_sku = col.replace('sku_id_', '')
+                    features[col] = 1 if expected_sku == sku_id else 0
+                    
+            # Ensure X exactly matches expected columns
+            for col in expected_features:
+                if col not in features.columns:
+                    features[col] = 0
+            X = features[expected_features]
+            
+            # Predict
+            preds = _xgboost_model.predict(X)
+            total_predicted_demand = int(np.sum(preds))
+            
+            # Predict upcoming shortage
+            shortage_date = None
+            shortage_amount = 0
+            inv_item = MOCK_INVENTORY.get(sku_id)
+            if inv_item:
+                current_stock = inv_item.current_stock
+                for i, daily_pred in enumerate(preds):
+                    current_stock -= daily_pred
+                    if current_stock < 0 and shortage_date is None:
+                        shortage_date = future_dates[i]
+                if current_stock < 0:
+                    shortage_amount = int(abs(current_stock))
+            
+            result = ForecastResult(
+                sku_id=sku_id,
+                horizon_days=int(horizon_days),
+                predicted_demand=total_predicted_demand,
+                confidence_low=int(total_predicted_demand * 0.85),
+                confidence_high=int(total_predicted_demand * 1.15),
+                projected_shortage_date=shortage_date,
+                projected_shortage_amount=shortage_amount,
+            )
+            return result.model_dump(mode="json")
         except Exception as e:
-            logger.warning("Error reading dataset for forecast: %s", e)
+            logger.error("XGBoost prediction failed: %s", e)
+            
+    # Fallback if XGBoost fails or not found
+    base = 300 if sku_id == "SKU-001" else (150 if sku_id == "SKU-002" else 120)
+    
+    shortage_date = None
+    shortage_amount = 0
+    inv_item = MOCK_INVENTORY.get(sku_id)
+    if inv_item:
+        current_stock = inv_item.current_stock
+        daily_demand = base / max(1, horizon_days)
+        if current_stock < base:
+            days_until_shortage = int(current_stock / daily_demand)
+            shortage_date = date.today() + timedelta(days=days_until_shortage)
+            shortage_amount = int(base - current_stock)
+            
+    result = ForecastResult(
+        sku_id=sku_id,
+        horizon_days=int(horizon_days),
+        predicted_demand=base,
+        confidence_low=int(base * 0.85),
+        confidence_high=int(base * 1.15),
+        projected_shortage_date=shortage_date,
+        projected_shortage_amount=shortage_amount,
+    )
+    return result.model_dump(mode="json")
 
-    predicted = int(avg_daily_demand * horizon_days)
-    margin = int(1.96 * demand_std * np.sqrt(horizon_days))
-    confidence_low = max(0, predicted - margin)
-    confidence_high = predicted + margin
 
-    return {
-        "sku_id": sku_id,
-        "horizon_days": horizon_days,
-        "predicted_demand": predicted,
-        "confidence_low": confidence_low,
-        "confidence_high": confidence_high,
-    }
-
-
-def get_suppliers(sku_id: str) -> list[dict]:
-    """Return list of available suppliers for a given SKU with pricing, lead time, and reliability."""
-    sups = MOCK_SUPPLIERS.get(sku_id, [])
-    if not sups:
-        return []
-    return [
-        {
-            "supplier_id": s.supplier_id,
-            "name": s.name,
-            "unit_price": s.unit_price,
-            "lead_time_days": s.lead_time_days,
-            "reliability_score": s.reliability_score,
-        }
-        for s in sups
-    ]
+def get_suppliers(sku_id: str) -> dict:
+    """Return all suppliers available for a SKU."""
+    suppliers = MOCK_SUPPLIERS.get(sku_id, [])
+    if not suppliers:
+        return {"suppliers": [], "message": f"No suppliers found for SKU '{sku_id}'"}
+    return {"suppliers": [s.model_dump(mode="json") for s in suppliers]}
 
 
 def get_supplier_performance(supplier_id: str) -> dict:
-    """Return performance metrics for a specific supplier by ID."""
-    for sku_sups in MOCK_SUPPLIERS.values():
-        for s in sku_sups:
+    """Return performance data for a specific supplier."""
+    for suppliers in MOCK_SUPPLIERS.values():
+        for s in suppliers:
             if s.supplier_id == supplier_id:
-                return {
-                    "supplier_id": s.supplier_id,
-                    "name": s.name,
-                    "unit_price": s.unit_price,
-                    "lead_time_days": s.lead_time_days,
-                    "reliability_score": s.reliability_score,
-                }
-    return {"error": f"Supplier '{supplier_id}' not found."}
+                return s.model_dump(mode="json")
+    return {"error": f"Unknown supplier '{supplier_id}'"}
 
 
-def get_risk_alerts() -> list[dict]:
-    """Return active stockout risk alerts."""
-    return [
-        {
-            "alert_id": a.alert_id,
-            "sku_id": a.sku_id,
-            "site_id": a.site_id,
-            "risk_level": a.risk_level,
-            "reason": a.reason,
-            "predicted_stockout_date": str(a.predicted_stockout_date) if a.predicted_stockout_date else None,
-        }
-        for a in RISK_ALERTS
-    ]
+def get_risk_alerts(risk_level: str = None) -> dict:
+    """Return current risk alerts, optionally filtered by risk_level."""
+    alerts = RISK_ALERTS
+    if risk_level:
+        alerts = [a for a in alerts if a.risk_level == risk_level]
+    return {"alerts": [a.model_dump(mode="json") for a in alerts]}
 
 
-def create_purchase_order(sku_id: str, quantity: int, supplier_id: str, reasoning: str) -> dict:
-    """Create a new purchase order to replenish stock for a given SKU."""
-    quantity = int(quantity)
-    # Find supplier price
-    unit_price = 100.0
-    for sups in MOCK_SUPPLIERS.values():
-        for s in sups:
-            if s.supplier_id == supplier_id:
-                unit_price = s.unit_price
-                break
+def create_purchase_order(items: list, supplier_id: str, reasoning: str) -> dict:
+    """
+    Construct, validate, and store a new Purchase Order.
 
-    total_cost = round(quantity * unit_price, 2)
+    Business rule (enforced in Python — NOT left to the LLM):
+      total_cost < 5_000  → status = "auto_approved"
+      total_cost >= 5_000 → status = "pending_approval"
+    """
+    try:
+        line_items = [POLineItem(**item) for item in items]
+    except Exception as exc:
+        logger.error("PO line item validation failed: %s", exc)
+        return {"error": f"Invalid line items: {exc}"}
+
+    total_cost = sum(i.quantity * i.unit_price for i in line_items)
+    status = "auto_approved" if total_cost < 5_000 else "pending_approval"
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
-    status = "auto_approved" if total_cost < 5000 else "pending_approval"
 
     po = PurchaseOrder(
         po_id=po_id,
         supplier_id=supplier_id,
-        items=[POLineItem(sku_id=sku_id, quantity=quantity, unit_price=unit_price)],
-        total_cost=total_cost,
+        items=line_items,
+        total_cost=round(total_cost, 2),
         reasoning=reasoning,
         status=status,
         generated_by="llm",
         created_at=date.today(),
     )
     MOCK_POS[po_id] = po
-    logger.info("Created PO %s via agent tool: $%.2f (%s)", po_id, total_cost, status)
-
-    return {
-        "po_id": po.po_id,
-        "supplier_id": po.supplier_id,
-        "total_cost": po.total_cost,
-        "status": po.status,
-        "reasoning": po.reasoning,
-    }
-
-
-def extract_email_info(
-    supplier_id: str = None,
-    sku_id: str = None,
-    delay_days: int = None,
-    summary: str = "",
-) -> dict:
-    """Structured output extractor for supplier delay emails."""
-    return {
-        "supplier_id": supplier_id,
-        "sku_id": sku_id,
-        "delay_days": delay_days,
-        "summary": summary,
-    }
-
-
-def dispatch_tool(tool_name: str, tool_args: dict, read_only: bool = False) -> dict:
-    """Route tool calls from LLM to Python functions."""
-    if read_only and tool_name == "create_purchase_order":
-        return {"error": "create_purchase_order is blocked in read-only query mode."}
-
-    handlers = {
-        "get_inventory": lambda: get_inventory(tool_args.get("sku_id", "")),
-        "get_forecast": lambda: get_forecast(tool_args.get("sku_id", ""), int(tool_args.get("horizon_days", 30))),
-        "get_suppliers": lambda: get_suppliers(tool_args.get("sku_id", "")),
-        "get_supplier_performance": lambda: get_supplier_performance(tool_args.get("supplier_id", "")),
-        "get_risk_alerts": lambda: get_risk_alerts(),
-        "create_purchase_order": lambda: create_purchase_order(
-            sku_id=tool_args.get("sku_id", ""),
-            quantity=int(tool_args.get("quantity", 0)),
-            supplier_id=tool_args.get("supplier_id", ""),
-            reasoning=tool_args.get("reasoning", "Agent initiated order."),
-        ),
-        "extract_email_info": lambda: extract_email_info(
-            supplier_id=tool_args.get("supplier_id"),
-            sku_id=tool_args.get("sku_id"),
-            delay_days=int(tool_args.get("delay_days")) if tool_args.get("delay_days") is not None else None,
-            summary=tool_args.get("summary", ""),
-        ),
-    }
-
-    handler = handlers.get(tool_name)
-    if not handler:
-        return {"error": f"Unknown tool: {tool_name}"}
-
-    try:
-        return handler()
-    except Exception as e:
-        logger.error("Error executing tool %s: %s", tool_name, e)
-        return {"error": str(e)}
-
-
-# ---------------------------------------------------------------
-# Gemini Tool Declarations
-# ---------------------------------------------------------------
-
-def _build_tools():
-    if genai_types is None:
-        return None, None, None
-
-    agent_declarations = [
-        genai_types.FunctionDeclaration(
-            name="get_inventory",
-            description="Get current stock and reorder point for a given SKU.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="The SKU identifier")},
-                required=["sku_id"],
-            ),
-        ),
-        genai_types.FunctionDeclaration(
-            name="get_forecast",
-            description="Get forecasted demand and confidence bounds for a SKU over a horizon of days.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={
-                    "sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="The SKU identifier"),
-                    "horizon_days": genai_types.Schema(type=genai_types.Type.INTEGER, description="Forecast horizon in days (default 30)"),
-                },
-                required=["sku_id"],
-            ),
-        ),
-        genai_types.FunctionDeclaration(
-            name="get_suppliers",
-            description="List available suppliers for a given SKU with pricing, lead time, and reliability.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="The SKU identifier")},
-                required=["sku_id"],
-            ),
-        ),
-        genai_types.FunctionDeclaration(
-            name="get_supplier_performance",
-            description="Get performance metrics and reliability history for a specific supplier.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={"supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Supplier identifier")},
-                required=["supplier_id"],
-            ),
-        ),
-        genai_types.FunctionDeclaration(
-            name="get_risk_alerts",
-            description="Retrieve active stockout risk alerts across all SKUs.",
-            parameters=genai_types.Schema(type=genai_types.Type.OBJECT, properties={}),
-        ),
-        genai_types.FunctionDeclaration(
-            name="create_purchase_order",
-            description="Create a purchase order to replenish stock. Orders < $5,000 are auto-approved; >= $5,000 require human review.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={
-                    "sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="The SKU to order"),
-                    "quantity": genai_types.Schema(type=genai_types.Type.INTEGER, description="Units to order"),
-                    "supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Selected supplier ID"),
-                    "reasoning": genai_types.Schema(type=genai_types.Type.STRING, description="Justification explaining supplier and quantity choice"),
-                },
-                required=["sku_id", "quantity", "supplier_id", "reasoning"],
-            ),
-        ),
-    ]
-
-    query_declarations = [d for d in agent_declarations if d.name != "create_purchase_order"]
-
-    email_declarations = [
-        genai_types.FunctionDeclaration(
-            name="extract_email_info",
-            description="Extract supplier ID, SKU ID, delay in days, and summary from a supplier delay email.",
-            parameters=genai_types.Schema(
-                type=genai_types.Type.OBJECT,
-                properties={
-                    "supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Supplier ID or company name"),
-                    "sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="Affected SKU identifier"),
-                    "delay_days": genai_types.Schema(type=genai_types.Type.INTEGER, description="Shipment delay in days"),
-                    "summary": genai_types.Schema(type=genai_types.Type.STRING, description="Concise explanation of the delay"),
-                },
-                required=["summary"],
-            ),
-        )
-    ]
-
-    return (
-        genai_types.Tool(function_declarations=agent_declarations),
-        genai_types.Tool(function_declarations=query_declarations),
-        genai_types.Tool(function_declarations=email_declarations),
+    logger.info(
+        "PO created: %s | supplier=%s | total=%.2f | status=%s",
+        po_id, supplier_id, total_cost, status,
     )
+    return po.model_dump(mode="json")
 
-AGENT_TOOL, QUERY_TOOL, EMAIL_TOOL = _build_tools()
+
+# Tool dispatcher
+_WRITE_TOOLS = {"create_purchase_order"}
+
+TOOL_REGISTRY: dict[str, Any] = {
+    "get_inventory":            get_inventory,
+    "get_forecast":             get_forecast,
+    "get_suppliers":            get_suppliers,
+    "get_supplier_performance": get_supplier_performance,
+    "get_risk_alerts":          get_risk_alerts,
+    "create_purchase_order":    create_purchase_order,
+}
+
+
+def dispatch_tool(name: str, args: dict, read_only: bool = False) -> dict:
+    """Execute a tool call and return the result as a plain dict."""
+    if read_only and name in _WRITE_TOOLS:
+        logger.warning("Blocked write tool in read-only mode: %s", name)
+        return {"error": f"Tool '{name}' is not available in query mode."}
+
+    fn = TOOL_REGISTRY.get(name)
+    if fn is None:
+        logger.warning("Unknown tool called: %s", name)
+        return {"error": f"Unknown tool: '{name}'"}
+
+    logger.info("Tool call → %s(%s)", name, args)
+    try:
+        return fn(**args)
+    except Exception as exc:
+        logger.error("Tool %s raised: %s", name, exc)
+        return {"error": str(exc)}
+
+# Gemini FunctionDeclaration schemas (google-genai style)
+_line_item_schema = genai_types.Schema(
+    type=genai_types.Type.OBJECT,
+    properties={
+        "sku_id":     genai_types.Schema(type=genai_types.Type.STRING),
+        "quantity":   genai_types.Schema(type=genai_types.Type.INTEGER),
+        "unit_price": genai_types.Schema(type=genai_types.Type.NUMBER),
+    },
+    required=["sku_id", "quantity", "unit_price"],
+)
+
+# All tool declarations
+ALL_FUNCTION_DECLARATIONS = [
+    genai_types.FunctionDeclaration(
+        name="get_inventory",
+        description="Get current stock level and reorder point for a SKU.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="SKU identifier, e.g. SKU-001")},
+            required=["sku_id"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="get_forecast",
+        description="Get the demand forecast for a SKU over the next N days. Also returns the projected shortage date and amount if a stockout is expected.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "sku_id":       genai_types.Schema(type=genai_types.Type.STRING, description="SKU identifier"),
+                "horizon_days": genai_types.Schema(type=genai_types.Type.INTEGER, description="Days to forecast. Default 30."),
+            },
+            required=["sku_id"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="get_suppliers",
+        description="List suppliers for a SKU with price, lead time, and reliability score.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="SKU identifier")},
+            required=["sku_id"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="get_supplier_performance",
+        description="Get reliability and pricing details for a specific supplier.",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={"supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Supplier ID, e.g. SUP-01")},
+            required=["supplier_id"],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="get_risk_alerts",
+        description="Get procurement risk alerts. Optionally filter by risk_level ('low','medium','high').",
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={"risk_level": genai_types.Schema(type=genai_types.Type.STRING, description="Optional: 'low', 'medium', or 'high'")},
+            required=[],
+        ),
+    ),
+    genai_types.FunctionDeclaration(
+        name="create_purchase_order",
+        description=(
+            "Create a purchase order after analysing inventory, forecast, and suppliers. "
+            "Always include a clear reasoning string explaining WHY you chose this supplier and quantity."
+        ),
+        parameters=genai_types.Schema(
+            type=genai_types.Type.OBJECT,
+            properties={
+                "items": genai_types.Schema(
+                    type=genai_types.Type.ARRAY,
+                    description="Line items to order",
+                    items=_line_item_schema,
+                ),
+                "supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Chosen supplier ID"),
+                "reasoning":   genai_types.Schema(type=genai_types.Type.STRING, description="Explanation of the decision"),
+            },
+            required=["items", "supplier_id", "reasoning"],
+        ),
+    ),
+]
+
+EMAIL_EXTRACT_DECLARATION = genai_types.FunctionDeclaration(
+    name="extract_email_info",
+    description="Extract structured delay information from a supplier email.",
+    parameters=genai_types.Schema(
+        type=genai_types.Type.OBJECT,
+        properties={
+            "supplier_id": genai_types.Schema(type=genai_types.Type.STRING, description="Supplier ID from the email"),
+            "sku_id":      genai_types.Schema(type=genai_types.Type.STRING, description="Affected SKU ID"),
+            "delay_days":  genai_types.Schema(type=genai_types.Type.INTEGER, description="Days delayed"),
+            "summary":     genai_types.Schema(type=genai_types.Type.STRING, description="One-line summary"),
+        },
+        required=["summary"],
+    ),
+)
+
+# Pre-built Tool objects for each endpoint's use case
+AGENT_TOOL  = genai_types.Tool(function_declarations=ALL_FUNCTION_DECLARATIONS)
+QUERY_TOOL  = genai_types.Tool(function_declarations=ALL_FUNCTION_DECLARATIONS[:-1])  # excludes create_purchase_order
+EMAIL_TOOL  = genai_types.Tool(function_declarations=[EMAIL_EXTRACT_DECLARATION])

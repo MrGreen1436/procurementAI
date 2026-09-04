@@ -39,8 +39,10 @@ export interface KPISummary {
 export interface InventoryPoint {
   date: string;
   sku: string;
-  actualLevel: number;
+  actualLevel: number | null;
   forecastedLevel: number;
+  etsForecastedLevel?: number;
+  lstmForecastedLevel?: number;
 }
 
 export interface QueryResponse {
@@ -50,12 +52,85 @@ export interface QueryResponse {
 }
 
 export interface ScenarioInput {
-  leadTimeVariabilityPct: number; // slider, e.g. -20 to +50
-  demandIncreasePct: number; // slider, e.g. -20 to +50
+  leadTimeVariabilityPct: number;
+  demandIncreasePct: number;
+  disrupted_supplier_id?: string | null;
+  extra_delay_days?: number | null;
+}
+
+export interface SKUShortageDetail {
+  sku_id: string;
+  baseline_inventory: number;
+  scenario_demand: number;
+  remaining_inventory: number;
+  shortage_units: number;
+  shortage_cost: number;
+  recommended_action: string;
+  baselineForecasts: ForecastSeriesCollection;
+  simulatedForecasts: ForecastSeriesCollection;
+}
+
+export interface ForecastPoint {
+  date: string;
+  value: number;
+}
+
+export interface ForecastSeriesCollection {
+  xgboost: ForecastPoint[];
+  lstm: ForecastPoint[];
+  ets: ForecastPoint[];
 }
 
 export interface ScenarioResult {
   newStockoutCount: number;
-  costImpact: number; // USD delta
+  costImpact: number;
   affectedSkus: string[];
+  totalShortageUnits: number;
+  skuDetails: SKUShortageDetail[];
 }
+
+export interface EmailParseResult {
+  supplier_id?: string | null;
+  sku_id?: string | null;
+  delay_days?: number | null;
+  summary: string;
+  affected_orders?: string[];
+  new_lead_time_days?: number | null;
+  stockout_risk_triggered?: boolean;
+  created_alert_id?: string | null;
+  persisted_email_id?: number | null;
+}
+
+export interface CategorySummary {
+  category: string;
+  skuCount: number;
+  atRiskCount: number;
+  totalValue: number;
+}
+
+export interface InventoryRow {
+  id?: number;
+  date: string;
+  store_id: string;
+  product_id: string;
+  category: string | null;
+  region: string | null;
+  inventory_level: number;
+  reorder_level: number | null;
+  price: number | null;
+  supplier_name: string | null;
+  discount: number | null;
+  competitor_pricing: number | null;
+  seasonality: string | null;
+  weather_condition: string | null;
+  holiday_promotion: boolean | null;
+  is_anomaly: boolean;
+  anomaly_reason: string | null;
+}
+
+export interface InventoryDatasetStatus {
+  has_dataset: boolean;
+  filename?: string | null;
+  row_count?: number;
+}
+
