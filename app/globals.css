@@ -1,3 +1,4 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=Space+Grotesk:wght@400..700&display=swap');
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -7,9 +8,17 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --font-heading: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  
+  --color-solar-core: #FFB627;
+  --color-ember: #FF6B35;
+  --color-cool-teal: #7DD3C0;
+  --color-card-surface: #14151F;
+  --color-raised-surface: #1C1E2B;
+  --color-border-subtle: #262838;
+
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -18,11 +27,6 @@
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
@@ -48,83 +52,175 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
+/* Solar Storm Default Dark Control Room Theme */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
+  --background: #0A0B10;
+  --foreground: #F5F1E8;
+  --card: #14151F;
+  --card-foreground: #F5F1E8;
+  --popover: #14151F;
+  --popover-foreground: #F5F1E8;
+  --primary: #FFB627;
+  --primary-foreground: #0A0B10;
+  --secondary: #1C1E2B;
+  --secondary-foreground: #F5F1E8;
+  --muted: #1C1E2B;
+  --muted-foreground: #8B87A0;
+  --accent: #1C1E2B;
+  --accent-foreground: #FFB627;
+  --destructive: #F0455C;
+  --border: #262838;
+  --input: #262838;
+  --ring: #FFB627;
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+
+  --sidebar: #0E0F17;
+  --sidebar-foreground: #F5F1E8;
+  --sidebar-primary: #FFB627;
+  --sidebar-primary-foreground: #0A0B10;
+  --sidebar-accent: #1C1E2B;
+  --sidebar-accent-foreground: #FFB627;
+  --sidebar-border: #262838;
+  --sidebar-ring: #FFB627;
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #0A0B10;
+  --foreground: #F5F1E8;
+  --card: #14151F;
+  --card-foreground: #F5F1E8;
+  --popover: #14151F;
+  --popover-foreground: #F5F1E8;
+  --primary: #FFB627;
+  --primary-foreground: #0A0B10;
+  --secondary: #1C1E2B;
+  --secondary-foreground: #F5F1E8;
+  --muted: #1C1E2B;
+  --muted-foreground: #8B87A0;
+  --accent: #1C1E2B;
+  --accent-foreground: #FFB627;
+  --destructive: #F0455C;
+  --border: #262838;
+  --input: #262838;
+  --ring: #FFB627;
+  --sidebar: #0E0F17;
+  --sidebar-foreground: #F5F1E8;
+  --sidebar-primary: #FFB627;
+  --sidebar-primary-foreground: #0A0B10;
+  --sidebar-accent: #1C1E2B;
+  --sidebar-accent-foreground: #FFB627;
+  --sidebar-border: #262838;
+  --sidebar-ring: #FFB627;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border-color: #262838;
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: #0A0B10;
+    color: #F5F1E8;
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   }
-  html {
-    @apply font-sans;
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', system-ui, -apple-system, sans-serif;
   }
+}
+
+/* ─── Dimensional Depth Effects ───────────────────────────── */
+
+/* Hero KPI 3D Tilt Container */
+.hero-kpi-card {
+  perspective: 1000px;
+  transform-style: preserve-3d;
+  transition: transform 0.15s cubic-bezier(0.2, 0, 0.2, 1);
+  will-change: transform;
+}
+
+/* Glassmorphism on Raised Surfaces */
+.raised-surface {
+  background: rgba(28, 30, 43, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 182, 39, 0.08);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.raised-surface-hover {
+  transition: all 0.2s ease;
+}
+.raised-surface-hover:hover {
+  background: rgba(28, 30, 43, 0.85);
+  border-color: rgba(255, 182, 39, 0.18);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Ambient Background Solar Flare Pulse (8s slow pulse) */
+.hero-ambient-glow {
+  position: relative;
+}
+.hero-ambient-glow::before {
+  content: '';
+  position: absolute;
+  inset: -15% -10% -15% -10%;
+  background: radial-gradient(circle at 30% 20%, rgba(255, 182, 39, 0.065), transparent 55%);
+  animation: pulse-glow 8s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+}
+
+/* Depth-Stacked Severity for Supplier Risk */
+.supplier-card {
+  transition: transform 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease;
+}
+
+.supplier-card[data-risk="red"] {
+  transform: scale(1.02);
+  box-shadow: 0 12px 40px rgba(240, 69, 92, 0.15);
+  border-left: 3px solid #F0455C;
+  background: rgba(240, 69, 92, 0.03);
+}
+
+.supplier-card[data-risk="yellow"] {
+  transform: scale(1);
+  box-shadow: 0 6px 20px rgba(251, 191, 36, 0.08);
+  border-left: 3px solid #FBBF24;
+}
+
+.supplier-card[data-risk="green"] {
+  transform: scale(0.99);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  border-left: 3px solid #34D399;
+  opacity: 0.92;
+}
+.supplier-card[data-risk="green"]:hover {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Custom sleek scrollbar for control room tables & logs */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #0A0B10;
+}
+::-webkit-scrollbar-thumb {
+  background: #262838;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3B3E54;
 }

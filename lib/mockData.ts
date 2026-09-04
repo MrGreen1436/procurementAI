@@ -1,4 +1,4 @@
-import { Alert, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse } from "../types";
+import { Alert, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, SupplierRiskItem, AuditLogEntry } from "../types";
 
 export const SKUS = [
   { sku: "SKU-STL-001", name: "Steel Coil - Industrial" },
@@ -253,3 +253,129 @@ export const MOCK_QA_PAIRS: Record<string, QueryResponse> = {
     ]
   }
 };
+
+export const MOCK_SUPPLIER_RISKS: SupplierRiskItem[] = [
+  {
+    supplier_id: "SUP-003",
+    supplier_name: "Pacific MicroTech Logistics",
+    risk_score: 0.745,
+    label: "red",
+    anomaly_rate: 0.284,
+    weekend_rate: 0.320,
+    avg_amount: 14650.00,
+    n_rows: 142,
+  },
+  {
+    supplier_id: "SUP-007",
+    supplier_name: "Apex Global Semi & Cells",
+    risk_score: 0.628,
+    label: "red",
+    anomaly_rate: 0.215,
+    weekend_rate: 0.280,
+    avg_amount: 12800.50,
+    n_rows: 98,
+  },
+  {
+    supplier_id: "SUP-001",
+    supplier_name: "Nordic Raw Materials AS",
+    risk_score: 0.462,
+    label: "yellow",
+    anomaly_rate: 0.125,
+    weekend_rate: 0.140,
+    avg_amount: 8920.00,
+    n_rows: 215,
+  },
+  {
+    supplier_id: "SUP-006",
+    supplier_name: "Titan Wire & Cable Ltd",
+    risk_score: 0.385,
+    label: "yellow",
+    anomaly_rate: 0.089,
+    weekend_rate: 0.110,
+    avg_amount: 7450.00,
+    n_rows: 160,
+  },
+  {
+    supplier_id: "SUP-004",
+    supplier_name: "AluForge Heavy Fabrication",
+    risk_score: 0.220,
+    label: "green",
+    anomaly_rate: 0.032,
+    weekend_rate: 0.050,
+    avg_amount: 5120.00,
+    n_rows: 310,
+  },
+  {
+    supplier_id: "SUP-002",
+    supplier_name: "EuroPolymers Synth Group",
+    risk_score: 0.145,
+    label: "green",
+    anomaly_rate: 0.015,
+    weekend_rate: 0.020,
+    avg_amount: 3890.00,
+    n_rows: 280,
+  }
+];
+
+export const MOCK_AUDIT_LOGS: AuditLogEntry[] = [
+  {
+    id: "aud-001",
+    timestamp: "2 mins ago",
+    action: "Approved Purchase Order PO-LITH-007 ($125,000)",
+    actor: "Procurement Officer",
+    actorType: "human",
+    target: "PO-LITH-007",
+    details: "Manual review cleared following inventory buffer verification.",
+    status: "success",
+  },
+  {
+    id: "aud-002",
+    timestamp: "18 mins ago",
+    action: "Auto-Generated Purchase Order PO-AUTO-COP-006",
+    actor: "Decision Engine",
+    actorType: "automated",
+    target: "SKU-COP-006",
+    details: "Projected 3-day stockout threshold breached. Ordered 5,500 units from Titan Wire.",
+    status: "info",
+  },
+  {
+    id: "aud-003",
+    timestamp: "45 mins ago",
+    action: "Extracted Supplier Delay Notice via Email",
+    actor: "Gemini-LLM",
+    actorType: "automated",
+    target: "WireCo Delay Notice",
+    details: "Identified 7-day shipment lag on Copper Wire; refreshed risk scores across tier-1 stores.",
+    status: "warning",
+  },
+  {
+    id: "aud-004",
+    timestamp: "1 hour ago",
+    action: "Decayed Trust Score for Pacific MicroTech (SUP-003)",
+    actor: "system",
+    actorType: "automated",
+    target: "SUP-003",
+    details: "Consecutive anomalous order quantity flagged by Enriched Anomaly Engine.",
+    status: "warning",
+  },
+  {
+    id: "aud-005",
+    timestamp: "2 hours ago",
+    action: "Simulated Supply Chain Disruption Scenario",
+    actor: "Procurement Officer",
+    actorType: "human",
+    target: "Scenario #104 (25% Lead Time Shock)",
+    details: "Modelled 3 SKU stockout impacts with total shortage cost of $42,500.",
+    status: "info",
+  },
+  {
+    id: "aud-006",
+    timestamp: "3 hours ago",
+    action: "Retrained XGBoost Demand Model on Uploaded Dataset",
+    actor: "system",
+    actorType: "automated",
+    target: "Model Checkpoint v2.4",
+    details: "Updated across 15 SKU demand distributions with RMSE of 4.12.",
+    status: "success",
+  },
+];

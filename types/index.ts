@@ -87,3 +87,37 @@ export interface EmailParseResult {
   created_alert_id?: string | null;
   persisted_email_id?: number | null;
 }
+
+/* ─── Solar Storm Additions ────────────────────────────────── */
+
+export type TrafficLightLabel = "green" | "yellow" | "red" | "insufficient_data";
+
+export interface SupplierRiskItem {
+  supplier_id: string;
+  supplier_name: string;
+  risk_score: number | null; // 0.0 - 1.0 (or mapped to 0-100)
+  label: TrafficLightLabel;
+  anomaly_rate: number;
+  weekend_rate?: number;
+  avg_amount: number;
+  n_rows?: number;
+  note?: string;
+}
+
+export type ActorType = "human" | "automated";
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string; // ISO or human readable
+  action: string;
+  actor: "Procurement Officer" | "system" | "Gemini-LLM" | "Decision Engine" | string;
+  actorType: ActorType;
+  target: string;
+  details?: string;
+  status?: "success" | "warning" | "error" | "info";
+}
+
+export interface AlertsStatus {
+  configured: boolean;
+  channel?: string;
+}

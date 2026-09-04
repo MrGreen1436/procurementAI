@@ -1,17 +1,39 @@
-import { Alert, EmailParseResult, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult } from "../types";
-import { MOCK_ALERTS, MOCK_INVENTORY_HISTORY, MOCK_KPIS, MOCK_POS, MOCK_QA_PAIRS } from "./mockData";
+import {
+  Alert,
+  AlertsStatus,
+  AuditLogEntry,
+  EmailParseResult,
+  InventoryPoint,
+  KPISummary,
+  PurchaseOrder,
+  QueryResponse,
+  ScenarioInput,
+  ScenarioResult,
+  SupplierRiskItem,
+} from "../types";
+import {
+  MOCK_ALERTS,
+  MOCK_AUDIT_LOGS,
+  MOCK_INVENTORY_HISTORY,
+  MOCK_KPIS,
+  MOCK_POS,
+  MOCK_QA_PAIRS,
+  MOCK_SUPPLIER_RISKS,
+} from "./mockData";
 
-// Sleep utility to simulate network latency
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// Sleep utility to simulate network latency on fallback
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function fetchKPIs(): Promise<KPISummary> {
   try {
-    const res = await fetch(`http://127.0.0.1:8000/kpi?t=${Date.now()}`);
+    const res = await fetch(`http://127.0.0.1:8000/kpis?t=${Date.now()}`);
     if (res.ok) return await res.json();
+    const resFallback = await fetch(`http://127.0.0.1:8000/kpi?t=${Date.now()}`);
+    if (resFallback.ok) return await resFallback.json();
   } catch (e) {
     console.error("fetchKPIs failed, falling back to mock", e);
   }
-  await delay(500);
+  await delay(300);
   return MOCK_KPIS;
 }
 
@@ -22,7 +44,7 @@ export async function fetchAlerts(): Promise<Alert[]> {
   } catch (e) {
     console.error("fetchAlerts failed, falling back to mock", e);
   }
-  await delay(600);
+  await delay(350);
   return MOCK_ALERTS;
 }
 
@@ -33,7 +55,7 @@ export async function fetchInventoryHistory(): Promise<InventoryPoint[]> {
   } catch (e) {
     console.error("fetchInventoryHistory failed, falling back to mock", e);
   }
-  await delay(700);
+  await delay(400);
   return MOCK_INVENTORY_HISTORY;
 }
 
@@ -44,11 +66,46 @@ export async function fetchPOs(): Promise<PurchaseOrder[]> {
   } catch (e) {
     console.error("fetchPOs failed, falling back to mock", e);
   }
-  await delay(600);
+  await delay(350);
   return MOCK_POS;
 }
 
-export async function updatePOStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<void> {
+export async function fetchSupplierRisks(): Promise<SupplierRiskItem[]> {
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/supplier-risk?t=${Date.now()}`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchSupplierRisks failed, falling back to mock", e);
+  }
+  await delay(350);
+  return MOCK_SUPPLIER_RISKS;
+}
+
+export async function fetchAuditLogs(): Promise<AuditLogEntry[]> {
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/audit-log?t=${Date.now()}`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchAuditLogs failed, falling back to mock", e);
+  }
+  await delay(350);
+  return MOCK_AUDIT_LOGS;
+}
+
+export async function fetchAlertsStatus(): Promise<AlertsStatus> {
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/alerts/status?t=${Date.now()}`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    // Graceful check fallback
+  }
+  return { configured: false, channel: "Slack" };
+}
+
+export async function updatePOStatus(
+  id: string,
+  status: "pending" | "approved" | "rejected"
+): Promise<void> {
   if (status === "approved") {
     try {
       await fetch(`http://127.0.0.1:8000/agent/approve/${id}`, { method: "POST" });
@@ -64,10 +121,10 @@ export async function updatePOStatus(id: string, status: "pending" | "approved" 
       console.error(e);
     }
   }
-  
+
   // Fallback to mock
-  await delay(800);
-  const po = MOCK_POS.find(p => p.id === id);
+  await delay(500);
+  const po = MOCK_POS.find((p) => p.id === id);
   if (po) {
     po.status = status;
   }
@@ -78,36 +135,39 @@ export async function queryAgent(question: string): Promise<QueryResponse> {
     const res = await fetch("http://127.0.0.1:8000/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question })
+      body: JSON.stringify({ question }),
     });
     if (res.ok) return await res.json();
   } catch (error) {
     console.error("Agent query failed:", error);
   }
-  
+
   // Fallback to mock
-  await delay(1500);
-  const match = Object.keys(MOCK_QA_PAIRS).find(q => 
-    question.toLowerCase().includes(q.toLowerCase().replace('?', ''))
+  await delay(800);
+  const match = Object.keys(MOCK_QA_PAIRS).find((q) =>
+    question.toLowerCase().includes(q.toLowerCase().replace("?", ""))
   );
   if (match) return MOCK_QA_PAIRS[match];
   return {
-    answer: "I couldn't reach the backend LLM (is port 8000 running?), and no canned answer matched your question.",
+    answer:
+      "I couldn't reach the backend LLM (is port 8000 running?), and no canned answer matched your question.",
     reasoning: "Fallback triggered.",
-    citations: []
+    citations: [],
   };
 }
 
-export async function uploadDataset(file: File): Promise<{ success: boolean; message: string }> {
+export async function uploadDataset(
+  file: File
+): Promise<{ success: boolean; message: string }> {
   try {
     const formData = new FormData();
     formData.append("file", file);
-    
+
     const res = await fetch("http://127.0.0.1:8000/upload-dataset", {
       method: "POST",
       body: formData,
     });
-    
+
     if (res.ok) {
       const data = await res.json();
       return { success: true, message: data.message };
@@ -140,9 +200,10 @@ export async function runScenario(input: ScenarioInput): Promise<ScenarioResult>
   // Fallback mock
   const stockoutIncrease = Math.max(
     0,
-    Math.floor((input.demandIncreasePct / 10) + (input.leadTimeVariabilityPct / 10))
+    Math.floor(input.demandIncreasePct / 10 + input.leadTimeVariabilityPct / 10)
   );
-  const costImpact = input.demandIncreasePct * 15000 + input.leadTimeVariabilityPct * 8000;
+  const costImpact =
+    input.demandIncreasePct * 15000 + input.leadTimeVariabilityPct * 8000;
   const ALL_AT_RISK = ["SKU_001", "SKU_003", "SKU_005"];
   const affectedSkus = ALL_AT_RISK.slice(0, stockoutIncrease);
   return {
@@ -163,3 +224,5 @@ export async function parseEmail(emailText: string): Promise<EmailParseResult> {
   if (!res.ok) throw new Error(`Email parse failed: ${res.status}`);
   return res.json();
 }
+
+export const parseSupplierEmail = parseEmail;

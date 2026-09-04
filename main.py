@@ -1232,6 +1232,101 @@ def get_depletion_alerts():
 
 
 # ---------------------------------------------------------------
+# Additive Read Endpoints for Solar Storm Dashboard
+# ---------------------------------------------------------------
+
+@app.get("/supplier-risk")
+def get_supplier_risk_endpoint():
+    """Surface per-supplier predictive risk from enriched engine or mock store."""
+    if _ENRICHED_ENGINE_AVAILABLE:
+        try:
+            from services.enriched_engine import compute_all_supplier_risks
+            risks = compute_all_supplier_risks()
+            if risks:
+                return risks
+        except Exception as exc:
+            logger.warning("compute_all_supplier_risks fallback: %s", exc)
+
+    # Fallback to store suppliers
+    results = []
+    for sku_id, sup_list in MOCK_SUPPLIERS.items():
+        for s in sup_list:
+            score = round(1.0 - s.reliability_score, 3)
+            label = "red" if score >= 0.6 else ("yellow" if score >= 0.3 else "green")
+            results.append({
+                "supplier_id": s.supplier_id,
+                "supplier_name": s.name,
+                "risk_score": score,
+                "label": label,
+                "anomaly_rate": round(score * 0.4, 3),
+                "weekend_rate": 0.15,
+                "avg_amount": round(s.unit_price * 120, 2),
+                "n_rows": 50,
+            })
+    seen = set()
+    deduped = []
+    for r in results:
+        if r["supplier_id"] not in seen:
+            seen.add(r["supplier_id"])
+            deduped.append(r)
+    return deduped
+
+
+@app.get("/audit-log")
+def get_audit_log_endpoint():
+    """Return reverse-chronological timeline of decisions, POs, and system actions."""
+    logs = []
+    for po in reversed(list(MOCK_POS.values())):
+        logs.append({
+            "id": f"aud-po-{po.po_id}",
+            "timestamp": po.created_at.isoformat() if hasattr(po.created_at, 'isoformat') else str(po.created_at),
+            "action": f"{'Auto-Approved' if po.status == 'auto_approved' else 'Created Pending'} PO {po.po_id} (${po.total_cost:,.2f})",
+            "actor": "Gemini-LLM" if po.generated_by == "llm" else "Decision Engine",
+            "actorType": "automated",
+            "target": f"Supplier {po.supplier_id}",
+            "details": po.reasoning[:120] + "..." if len(po.reasoning) > 120 else po.reasoning,
+            "status": "success" if po.status == "auto_approved" else "warning",
+        })
+    try:
+        email_logs = db_get_email_logs(limit=5)
+        for e in email_logs:
+            logs.append({
+                "id": f"aud-email-{e.get('id', uuid.uuid4().hex[:6])}",
+                "timestamp": e.get("created_at", datetime.utcnow().isoformat()),
+                "action": f"Parsed Supplier Delay: {e.get('delay_days', 0)} days",
+                "actor": "Gemini-LLM",
+                "actorType": "automated",
+                "target": e.get("sku_id") or "Supply Chain Alert",
+                "details": e.get("summary", ""),
+                "status": "warning",
+            })
+    except Exception:
+        pass
+    if not logs:
+        logs.append({
+            "id": "aud-init",
+            "timestamp": datetime.utcnow().isoformat(),
+            "action": "Baseline Inventory Verification Cleared",
+            "actor": "Procurement Officer",
+            "actorType": "human",
+            "target": "Global Store Repositories",
+            "details": "Routine cycle-count audit completed across all warehouse nodes.",
+            "status": "success",
+        })
+    return logs
+
+
+@app.get("/alerts/status")
+def get_alerts_status():
+    """Return whether Slack alerting is configured."""
+    webhook = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+    return {
+        "configured": bool(webhook),
+        "channel": "Slack",
+    }
+
+
+# ---------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------
 

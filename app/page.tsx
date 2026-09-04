@@ -2,84 +2,88 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchKPIs, fetchAlerts, fetchInventoryHistory, fetchPOs } from "@/lib/api";
-import { KPISummary, Alert, InventoryPoint, PurchaseOrder, RiskLevel } from "@/types";
+import {
+  fetchKPIs,
+  fetchAlerts,
+  fetchInventoryHistory,
+  fetchPOs,
+  fetchSupplierRisks,
+  fetchAuditLogs,
+  fetchAlertsStatus,
+  uploadDataset,
+} from "@/lib/api";
+import {
+  KPISummary,
+  Alert,
+  InventoryPoint,
+  PurchaseOrder,
+  RiskLevel,
+  SupplierRiskItem,
+  AuditLogEntry,
+  AlertsStatus,
+} from "@/types";
 import { useCountUp } from "@/lib/useCountUp";
 import { toast } from "sonner";
+import { HeroKpiCard } from "@/components/HeroKpiCard";
+import { SupplierRiskPanel } from "@/components/SupplierRiskPanel";
+import { AuditTrailPanel } from "@/components/AuditTrailPanel";
 
-// shadcn UI
+// shadcn UI & Recharts
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  ComposedChart,
+  Area,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+} from "recharts";
 
-// Recharts
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
-
-// Lucide
-import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart } from "lucide-react";
+// Lucide Icons
+import {
+  AlertTriangle,
+  Bot,
+  Mail,
+  TrendingUp,
+  ShoppingCart,
+  Upload,
+  Radio,
+  Clock,
+  Sparkles,
+  ExternalLink,
+  ChevronRight,
+  Shield,
+  Layers,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
 /* ─── Helpers ─────────────────────────────────────────── */
 const formatCurrency = (val: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(val);
+  new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(val);
 
-const riskColorClass = (level: RiskLevel) => ({
-  high: "bg-red-500 hover:bg-red-600 text-white",
-  medium: "bg-amber-500 hover:bg-amber-600 text-white",
-  low: "bg-emerald-500 hover:bg-emerald-600 text-white",
-}[level] ?? "bg-slate-500 text-white");
-
-const KPI_BORDER = {
-  stockout: "border-t-red-500",
-  excess: "border-t-emerald-500",
-  po: "border-t-blue-500",
-  supplier: "border-t-amber-500",
+const riskBadgeStyle = (level: RiskLevel) => {
+  switch (level) {
+    case "high":
+      return "bg-[#F0455C]/15 text-[#F0455C] border-[#F0455C]/30";
+    case "medium":
+      return "bg-[#FBBF24]/15 text-[#FBBF24] border-[#FBBF24]/30";
+    case "low":
+    default:
+      return "bg-[#34D399]/15 text-[#34D399] border-[#34D399]/30";
+  }
 };
-
-/* ─── Animated KPI Card ───────────────────────────────── */
-function KPICard({
-  label,
-  value,
-  formatted,
-  borderColor,
-  icon: Icon,
-}: {
-  label: string;
-  value: number;
-  formatted?: string;
-  borderColor: string;
-  icon: React.ElementType;
-}) {
-  const animated = useCountUp(value, 1200);
-  const display = formatted
-    ? formatCurrency(animated * (value / Math.max(1, value)))  // keeps proportional if formatted
-    : animated;
-
-  // For currency we do a simpler linear scale
-  const currencyAnimated = useCountUp(Math.round(value), 1200);
-
-  return (
-    <Card className={cn("border-t-4 shadow-sm", borderColor)}>
-      <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-bold tabular-nums">
-          {formatted
-            ? formatCurrency(currencyAnimated)
-            : animated}
-          {label === "Supplier Risk Score" && (
-            <span className="text-lg text-muted-foreground font-normal">/100</span>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 /* ─── Simulated supplier delay alert ─────────────────── */
 const DELAY_ALERT: Alert = {
@@ -93,7 +97,62 @@ const DELAY_ALERT: Alert = {
   createdAt: new Date().toISOString(),
 };
 
-/* ─── Page ────────────────────────────────────────────── */
+/* ─── Secondary Raised KPI Card ────────────────────────── */
+function RaisedKpiCard({
+  label,
+  value,
+  isCurrency = false,
+  subtitle,
+  icon: Icon,
+  accentColor = "#FFB627",
+  urgencyBorder,
+}: {
+  label: string;
+  value: number;
+  isCurrency?: boolean;
+  subtitle: string;
+  icon: React.ElementType;
+  accentColor?: string;
+  urgencyBorder?: string;
+}) {
+  const animatedValue = useCountUp(Math.round(value), 1200);
+
+  return (
+    <div
+      className={cn(
+        "raised-surface raised-surface-hover rounded-xl p-5 flex flex-col justify-between transition-all duration-200 border border-[#262838]",
+        urgencyBorder
+      )}
+    >
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <span className="text-xs font-medium text-[#8B87A0] tracking-normal">
+          {label}
+        </span>
+        <div
+          className="p-2 rounded-lg bg-[#1C1E2B] border border-[#262838] transition-transform"
+          style={{ color: accentColor }}
+        >
+          <Icon className="w-4 h-4" />
+        </div>
+      </div>
+
+      <div className="my-1">
+        <div
+          className="text-3xl font-bold font-heading tracking-tight tabular-nums"
+          style={{ color: accentColor === "#FF6B35" ? "#FF6B35" : "#F5F1E8" }}
+        >
+          {isCurrency ? formatCurrency(animatedValue) : animatedValue.toLocaleString()}
+        </div>
+      </div>
+
+      <p className="text-[11px] text-[#8B87A0] mt-1.5 line-clamp-1">
+        {subtitle}
+      </p>
+    </div>
+  );
+}
+
+/* ─── Dashboard Page Component ─────────────────────────── */
 export default function DashboardPage() {
   const router = useRouter();
 
@@ -101,11 +160,15 @@ export default function DashboardPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [history, setHistory] = useState<InventoryPoint[]>([]);
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
+  const [supplierRisks, setSupplierRisks] = useState<SupplierRiskItem[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [slackStatus, setSlackStatus] = useState<AlertsStatus>({ configured: false });
 
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedSku, setSelectedSku] = useState<string>("");
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
+  const [isUploading, setIsUploading] = useState<boolean>(false);
 
   useEffect(() => {
     fetchKPIs().then(setKpis);
@@ -120,11 +183,13 @@ export default function DashboardPage() {
       }
     });
     fetchPOs().then(setPOs);
+    fetchSupplierRisks().then(setSupplierRisks);
+    fetchAuditLogs().then(setAuditLogs);
+    fetchAlertsStatus().then(setSlackStatus);
   }, []);
 
   const uniqueSkus = Array.from(new Set(history.map((h) => h.sku)));
 
-  // Whenever uniqueSkus changes, ensure selectedSku points to a valid SKU
   useEffect(() => {
     if (uniqueSkus.length > 0 && (!selectedSku || !uniqueSkus.includes(selectedSku))) {
       setSelectedSku(uniqueSkus[0]);
@@ -153,14 +218,26 @@ export default function DashboardPage() {
     };
     setAlerts((prev) => [newAlert, ...prev]);
     setNewAlertIds((prev) => new Set(prev).add(newAlert.id));
-    setAlertFilter("all"); // show all so the new alert is visible
+    setAlertFilter("all");
 
-    toast.error("⚠️ Supplier Delay Email Received", {
-      description: "WireCo Global reports a 7-day delay on Copper Wire shipments. New high-risk alert added.",
+    // Add immediate audit log entry
+    const newAuditEntry: AuditLogEntry = {
+      id: `aud-sim-${Date.now()}`,
+      timestamp: "Just now",
+      action: "Parsed Supplier Delay Email from WireCo Global",
+      actor: "Gemini-LLM",
+      actorType: "automated",
+      target: "SKU-COP-006 (Copper Wire)",
+      details: "7-day shipment lag extracted; flagged critical stockout risk.",
+      status: "warning",
+    };
+    setAuditLogs((prev) => [newAuditEntry, ...prev]);
+
+    toast.error("Supplier Delay Notice Processed", {
+      description: "WireCo Global reported a 7-day delay. Stockout window narrowed to 3 days.",
       duration: 5000,
     });
 
-    // Remove fade-in highlight after animation
     setTimeout(() => {
       setNewAlertIds((prev) => {
         const next = new Set(prev);
@@ -170,11 +247,11 @@ export default function DashboardPage() {
     }, 2500);
   };
 
-  /* ── Demo: Run Agent (auto chat replay) ── */
+  /* ── Demo: Run Agent ── */
   const handleRunAgent = () => {
     const question = encodeURIComponent("Which SKUs are at highest stockout risk?");
-    toast.success("🤖 Agent Running", {
-      description: "Navigating to Chat with a pre-loaded query…",
+    toast.success("Autonomous Agent Invoked", {
+      description: "Opening multi-turn inspection agent in chat...",
       duration: 2500,
     });
     setTimeout(() => {
@@ -186,342 +263,530 @@ export default function DashboardPage() {
   const handleUploadDataset = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    
-    toast.info("Uploading Dataset", {
-      description: `Uploading ${file.name} and retraining ML models...`,
-      duration: 8000,
+
+    setIsUploading(true);
+    toast.info("Ingesting Dataset", {
+      description: `Uploading ${file.name} and retraining ML demand pipeline...`,
+      duration: 7000,
     });
-    
-    const { uploadDataset } = await import("@/lib/api");
+
     const result = await uploadDataset(file);
-    e.target.value = ""; // Allow re-uploading
-    
+    e.target.value = "";
+    setIsUploading(false);
+
     if (result.success) {
-      toast.success("Upload Complete!", { description: result.message, duration: 5000 });
-      // Refresh UI by triggering a reload
+      toast.success("Model Pipeline Retrained", {
+        description: result.message,
+        duration: 5000,
+      });
       setTimeout(() => {
         window.location.reload();
-      }, 1200);
+      }, 1400);
     } else {
-      toast.error("Upload Failed", { description: result.message, duration: 6000 });
+      toast.error("Upload Error", {
+        description: result.message,
+        duration: 6000,
+      });
     }
   };
 
   return (
-    <div className="space-y-6">
-      {/* Header + Demo Buttons */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div className="space-y-7 max-w-[1600px] mx-auto pb-10">
+      {/* ─── Top Control Room Bar ─────────────────────────────── */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 pb-4 border-b border-[#262838]">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Real-time supply chain forecasting &amp; risk intelligence
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl sm:text-3xl font-bold font-heading text-[#F5F1E8] tracking-tight">
+              Command Control Room
+            </h1>
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-[#34D399]/10 text-[#34D399] border border-[#34D399]/25">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#34D399] animate-ping" />
+              LIVE TELEMETRY
+            </span>
+          </div>
+          <p className="text-xs sm:text-sm text-[#8B87A0] mt-1">
+            Real-time supply chain forecasting, predictive supplier risk intelligence &amp; autonomous governance
           </p>
         </div>
-        <div className="flex gap-2 shrink-0">
-          <label className="inline-flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold px-3 py-2 transition-colors cursor-pointer">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-            Upload Dataset
-            <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleUploadDataset} />
+
+        {/* Action Controls */}
+        <div className="flex items-center gap-2.5 flex-wrap shrink-0">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-[#262838] bg-[#14151F] hover:bg-[#1C1E2B] hover:border-[#FFB627]/40 text-[#F5F1E8] text-xs font-semibold px-3.5 py-2.5 transition-all duration-200 cursor-pointer shadow-sm">
+            <Upload className="h-3.5 w-3.5 text-[#FFB627]" />
+            <span>{isUploading ? "Retraining..." : "Upload Dataset"}</span>
+            <input
+              type="file"
+              accept=".csv,.xlsx,.xls"
+              className="hidden"
+              disabled={isUploading}
+              onChange={handleUploadDataset}
+            />
           </label>
+
           <button
             id="demo-delay-btn"
             type="button"
             onClick={handleSimulateDelay}
-            className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 hover:bg-red-500/20 text-red-600 dark:text-red-400 text-xs font-semibold px-3 py-2 transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg border border-[#FF6B35]/30 bg-[#FF6B35]/10 hover:bg-[#FF6B35]/20 text-[#FF6B35] text-xs font-semibold px-3.5 py-2.5 transition-all duration-200 shadow-sm"
           >
-            <Mail className="h-3.5 w-3.5" />
-            Simulate Supplier Delay
+            <Mail className="h-3.5 w-3.5 text-[#FF6B35]" />
+            Simulate Delay
           </button>
+
           <button
             id="demo-agent-btn"
             type="button"
             onClick={handleRunAgent}
-            className="inline-flex items-center gap-2 rounded-lg border border-primary/40 bg-primary/10 hover:bg-primary/20 text-primary text-xs font-semibold px-3 py-2 transition-colors"
+            className="inline-flex items-center gap-2 rounded-lg border border-[#FFB627]/50 bg-gradient-to-r from-[#FFB627]/20 to-[#FF6B35]/20 hover:from-[#FFB627]/30 hover:to-[#FF6B35]/30 text-[#FFB627] text-xs font-semibold px-4 py-2.5 transition-all duration-200 shadow-[0_0_20px_rgba(255,182,39,0.15)]"
           >
-            <Bot className="h-3.5 w-3.5" />
-            Run Agent
+            <Bot className="h-3.5 w-3.5 text-[#FFB627]" />
+            Run AI Agent
           </button>
         </div>
       </div>
 
-      {/* KPI Cards with count-up animation */}
-      {kpis && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          <KPICard
+      {/* ─── Hero KPI Strip with Ambient Gold Flare Glow ────────── */}
+      <div className="hero-ambient-glow relative">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 relative z-10">
+          {/* Card 1: Stockout Risk Count (Urgent/Ember Accent) */}
+          <RaisedKpiCard
             label="Stockout Risk Count"
-            value={kpis.stockoutRiskCount}
-            borderColor={KPI_BORDER.stockout}
+            value={kpis?.stockoutRiskCount ?? 6}
+            subtitle="SKUs breaching 7-day threshold"
             icon={AlertTriangle}
+            accentColor="#FF6B35"
+            urgencyBorder="border-l-4 border-l-[#FF6B35]"
           />
-          <KPICard
+
+          {/* Card 2: Excess Inventory Value (Cool Teal Contrast) */}
+          <RaisedKpiCard
             label="Excess Inventory Value"
-            value={kpis.excessInventoryValue}
-            formatted="currency"
-            borderColor={KPI_BORDER.excess}
+            value={kpis?.excessInventoryValue ?? 1245000}
+            isCurrency
+            subtitle="Holding capital exceeding 1.5× forecast"
             icon={TrendingUp}
+            accentColor="#7DD3C0"
           />
-          <KPICard
-            label="Open POs"
-            value={kpis.openPOCount}
-            borderColor={KPI_BORDER.po}
+
+          {/* Card 3: Open POs (Raised Control Surface) */}
+          <RaisedKpiCard
+            label="Active Purchase Orders"
+            value={kpis?.openPOCount ?? 5}
+            subtitle="Autonomous drafts & pending approvals"
             icon={ShoppingCart}
+            accentColor="#F5F1E8"
           />
-          <KPICard
+
+          {/* Card 4: Flagship Metric — Hero 3D Tilt Card (Gold Solar Core) */}
+          <HeroKpiCard
             label="Supplier Risk Score"
-            value={kpis.supplierRiskScore}
-            borderColor={KPI_BORDER.supplier}
-            icon={AlertTriangle}
+            value={kpis?.supplierRiskScore ?? 68}
+            maxScore={100}
+            subtitle="Fleet-wide aggregate risk index"
+            icon={Shield}
+            badgeText="FLAGSHIP METRIC"
           />
         </div>
-      )}
+      </div>
 
-      {/* Main Grid: Chart + PO Queue */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Chart */}
+      {/* ─── Main Analytics Row: Forecast Chart + PO Queue ──────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Forecast Chart with Gradient Fill Under Teal Line */}
         <div className="lg:col-span-2">
-          <Card className="shadow-sm h-full">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-base font-semibold">Inventory Forecast vs Actual</CardTitle>
+          <div className="rounded-xl bg-[#14151F] border border-[#262838] p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)] flex flex-col h-full">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#262838]">
+              <div>
+                <h2 className="text-base font-semibold font-heading text-[#F5F1E8] tracking-tight">
+                  Inventory Forecast vs Actual Demand
+                </h2>
+                <p className="text-xs text-[#8B87A0] mt-0.5">
+                  Past 90-day history blended with 30-day XGBoost, ETS &amp; LSTM predictions
+                </p>
+              </div>
+
               <div className="w-56">
                 <Select value={selectedSku} onValueChange={(val) => val && setSelectedSku(val)}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger className="h-8 text-xs bg-[#1C1E2B] border-[#262838] text-[#F5F1E8] focus:ring-[#FFB627]/40">
                     <SelectValue placeholder="Select SKU" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className="bg-[#14151F] border-[#262838] text-[#F5F1E8]">
                     {uniqueSkus.map((sku) => (
-                      <SelectItem key={sku} value={sku} className="text-xs">
+                      <SelectItem
+                        key={sku}
+                        value={sku}
+                        className="text-xs focus:bg-[#1C1E2B] focus:text-[#FFB627]"
+                      >
                         {sku}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-            </CardHeader>
-            <CardContent>
-              <div className="h-72 w-full mt-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" className="text-border/30" />
-                    <XAxis
-                      dataKey="date"
-                      tick={{ fontSize: 11, fill: "currentColor" }}
-                      className="text-muted-foreground"
-                      tickFormatter={(val) => val.split("-").slice(1).join("/")}
-                      axisLine={false}
-                      tickLine={false}
-                      minTickGap={30}
-                    />
-                    <YAxis
-                      tick={{ fontSize: 11, fill: "currentColor" }}
-                      className="text-muted-foreground"
-                      axisLine={false}
-                      tickLine={false}
-                      tickFormatter={(val) => (val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val)}
-                    />
-                    <Tooltip
-                      contentStyle={{
-                        backgroundColor: "hsl(var(--card))",
-                        borderColor: "hsl(var(--border))",
-                        color: "hsl(var(--foreground))",
-                        borderRadius: "8px",
-                        fontSize: 12,
-                      }}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 12 }} />
-                    <Line
-                      type="monotone"
-                      dataKey="ActualLevel"
-                      name="Actual Level"
-                      stroke="#3b82f6"
-                      strokeWidth={2}
-                      dot={false}
-                      activeDot={{ r: 5 }}
-                      isAnimationActive
-                      animationDuration={800}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="ForecastedLevel"
-                      name="XGBoost Forecast"
-                      stroke="#94a3b8"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={200}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="EtsForecastedLevel"
-                      name="ETS Forecast"
-                      stroke="#f59e0b"
-                      strokeWidth={2}
-                      strokeDasharray="3 3"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={400}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="LstmForecastedLevel"
-                      name="LSTM Forecast"
-                      stroke="#8b5cf6"
-                      strokeWidth={2}
-                      strokeDasharray="4 1 2"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={600}
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
+            </div>
+
+            {/* Recharts Area + Line chart with 1.2s motion moment */}
+            <div className="h-80 w-full mt-4">
+              <ResponsiveContainer width="100%" height="100%">
+                <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+                  <defs>
+                    <linearGradient id="actualGradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#7DD3C0" stopOpacity={0.28} />
+                      <stop offset="95%" stopColor="#7DD3C0" stopOpacity={0.0} />
+                    </linearGradient>
+                  </defs>
+
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    vertical={false}
+                    stroke="#262838"
+                    opacity={0.6}
+                  />
+
+                  <XAxis
+                    dataKey="date"
+                    tick={{ fontSize: 11, fill: "#8B87A0" }}
+                    tickFormatter={(val) => val.split("-").slice(1).join("/")}
+                    axisLine={{ stroke: "#262838" }}
+                    tickLine={false}
+                    minTickGap={28}
+                  />
+
+                  <YAxis
+                    tick={{ fontSize: 11, fill: "#8B87A0" }}
+                    axisLine={false}
+                    tickLine={false}
+                    tickFormatter={(val) => (val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val)}
+                  />
+
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: "#14151F",
+                      borderColor: "#262838",
+                      borderRadius: "10px",
+                      color: "#F5F1E8",
+                      fontSize: "12px",
+                      boxShadow: "0 8px 32px rgba(0,0,0,0.6)",
+                    }}
+                    labelStyle={{ color: "#8B87A0", marginBottom: "4px" }}
+                  />
+
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, paddingTop: 12 }}
+                    formatter={(val) => <span style={{ color: "#F5F1E8" }}>{val}</span>}
+                  />
+
+                  {/* Gradient-fill area beneath Actual Level in Cool Teal (#7DD3C0) */}
+                  <Area
+                    type="monotone"
+                    dataKey="ActualLevel"
+                    name="Actual Level"
+                    stroke="#7DD3C0"
+                    strokeWidth={2.5}
+                    fill="url(#actualGradient)"
+                    dot={false}
+                    activeDot={{ r: 5, fill: "#7DD3C0", stroke: "#0A0B10", strokeWidth: 2 }}
+                    isAnimationActive
+                    animationDuration={1200}
+                    animationEasing="ease-out"
+                  />
+
+                  {/* Multi-model Forecast Lines */}
+                  <Line
+                    type="monotone"
+                    dataKey="ForecastedLevel"
+                    name="XGBoost Forecast"
+                    stroke="#8B87A0"
+                    strokeWidth={1.8}
+                    strokeDasharray="5 5"
+                    dot={false}
+                    isAnimationActive
+                    animationDuration={1200}
+                  />
+
+                  <Line
+                    type="monotone"
+                    dataKey="EtsForecastedLevel"
+                    name="ETS Forecast"
+                    stroke="#FBBF24"
+                    strokeWidth={1.8}
+                    strokeDasharray="3 3"
+                    dot={false}
+                    isAnimationActive
+                    animationDuration={1200}
+                  />
+
+                  <Line
+                    type="monotone"
+                    dataKey="LstmForecastedLevel"
+                    name="LSTM Forecast"
+                    stroke="#A78BFA"
+                    strokeWidth={1.8}
+                    strokeDasharray="4 1 2"
+                    dot={false}
+                    isAnimationActive
+                    animationDuration={1200}
+                  />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
         </div>
 
-        {/* PO Queue Preview */}
+        {/* PO Approval Queue Preview */}
         <div className="lg:col-span-1">
-          <Card className="shadow-sm flex flex-col h-full">
-            <CardHeader>
-              <CardTitle className="text-base font-semibold">PO Approval Queue</CardTitle>
-            </CardHeader>
-            <CardContent className="flex-1 overflow-auto space-y-3">
+          <div className="rounded-xl bg-[#14151F] border border-[#262838] p-5 shadow-[0_8px_32px_rgba(0,0,0,0.35)] flex flex-col h-full">
+            <div className="flex items-center justify-between pb-3 border-b border-[#262838]">
+              <div>
+                <h2 className="text-base font-semibold font-heading text-[#F5F1E8] tracking-tight">
+                  PO Approval Queue
+                </h2>
+                <p className="text-xs text-[#8B87A0] mt-0.5">
+                  AI-drafted orders pending human confirmation
+                </p>
+              </div>
+              <span className="text-xs px-2 py-0.5 rounded bg-[#1C1E2B] text-[#FFB627] font-semibold border border-[#FFB627]/20">
+                {pos.length} queued
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-auto space-y-3 mt-4 pr-1">
               {pos.slice(0, 5).map((po) => (
-                <div key={po.id} className="p-3 border rounded-lg bg-card shadow-sm">
+                <div
+                  key={po.id}
+                  className="p-3.5 rounded-lg bg-[#1C1E2B]/80 hover:bg-[#1C1E2B] border border-[#262838] hover:border-[#FFB627]/30 transition-all duration-200 shadow-sm"
+                >
                   <div className="flex justify-between items-start mb-1.5">
-                    <span className="font-semibold text-sm">{po.sku}</span>
-                    <Badge className={cn("text-xs", riskColorClass(po.riskLevel))}>{po.riskLevel}</Badge>
+                    <div>
+                      <span className="font-semibold text-sm text-[#F5F1E8] font-heading">
+                        {po.sku}
+                      </span>
+                      <div className="text-[11px] text-[#8B87A0] truncate max-w-[160px]">
+                        {po.supplier}
+                      </div>
+                    </div>
+                    <span
+                      className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${riskBadgeStyle(
+                        po.riskLevel
+                      )}`}
+                    >
+                      {po.riskLevel} risk
+                    </span>
                   </div>
-                  <div className="text-xs text-muted-foreground mb-1">Supplier: {po.supplier}</div>
-                  <div className="flex justify-between text-xs font-medium">
-                    <span>Qty: {po.quantity.toLocaleString()}</span>
-                    <span>{formatCurrency(po.totalCost)}</span>
+
+                  <div className="flex justify-between items-center text-xs mt-2.5 pt-2 border-t border-[#262838]/80 text-[#8B87A0]">
+                    <span>Qty: <strong className="text-[#F5F1E8]">{po.quantity.toLocaleString()}</strong></span>
+                    <span className="text-[#F5F1E8] font-semibold font-heading">
+                      {formatCurrency(po.totalCost)}
+                    </span>
                   </div>
                 </div>
               ))}
-            </CardContent>
-          </Card>
+            </div>
+
+            <div className="pt-3 border-t border-[#262838] mt-3 text-center">
+              <button
+                onClick={() => router.push("/po-queue")}
+                className="w-full py-2 rounded-lg bg-[#1C1E2B] hover:bg-[#262838] text-xs font-semibold text-[#FFB627] transition-colors border border-[#262838] flex items-center justify-center gap-1"
+              >
+                Inspect All Orders <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Alerts Table */}
-      <Card className="shadow-sm">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base font-semibold">
-            Active Alerts
-            {alerts.length > 0 && (
-              <span className="ml-2 text-xs font-normal text-muted-foreground">({alerts.length})</span>
-            )}
-          </CardTitle>
-          <div className="w-44">
-            <Select value={alertFilter} onValueChange={(val) => val && setAlertFilter(val)}>
-              <SelectTrigger className="h-8 text-xs">
-                <SelectValue placeholder="Filter" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Risks</SelectItem>
-                <SelectItem value="high">High Risk</SelectItem>
-                <SelectItem value="medium">Medium Risk</SelectItem>
-                <SelectItem value="low">Low Risk</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="pl-6">SKU</TableHead>
-                <TableHead>Risk Level</TableHead>
-                <TableHead>Days to Stockout</TableHead>
-                <TableHead>Current vs Forecast</TableHead>
-                <TableHead className="text-right pr-6">Date</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredAlerts.map((alert, idx) => (
-                <TableRow
-                  key={alert.id ?? `alert-${idx}`}
-                  className={cn(
-                    "cursor-pointer hover:bg-muted/50 transition-all",
-                    alert.id && newAlertIds.has(alert.id) &&
-                      "animate-in fade-in-0 slide-in-from-top-2 duration-500 bg-red-500/5"
-                  )}
-                  onClick={() => setSelectedAlert(alert)}
-                >
-                  <TableCell className="font-medium pl-6">
-                    <div>{alert.sku}</div>
-                    <div className="text-xs text-muted-foreground">{alert.skuName}</div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge className={cn("text-xs", riskColorClass(alert.riskLevel))}>
-                      {alert.riskLevel}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {alert.daysUntilStockout != null ? (
-                      <span className={alert.daysUntilStockout <= 5 ? "text-red-500 font-semibold" : ""}>
-                        {alert.daysUntilStockout} days
-                      </span>
-                    ) : "N/A"}
-                  </TableCell>
-                  <TableCell>
-                    <span>{(alert.currentStock ?? 0).toLocaleString()}</span>
-                    <span className="text-muted-foreground"> / </span>
-                    <span className="text-red-500">{(alert.forecastedDemand ?? 0).toLocaleString()}</span>
-                  </TableCell>
-                  <TableCell className="text-right text-muted-foreground text-xs pr-6">
-                    {alert.createdAt ? new Date(alert.createdAt).toLocaleDateString() : "N/A"}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      {/* ─── NEW SECTION: Per-Supplier Risk Panel ─────────────────── */}
+      <SupplierRiskPanel suppliers={supplierRisks} />
 
-      {/* Alert Detail Drawer */}
+      {/* ─── Bottom Split: Active Alerts + Audit Trail Timeline ──── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Active Alerts Table (7 cols) */}
+        <div className="lg:col-span-7">
+          <div className="rounded-xl bg-[#14151F] border border-[#262838] shadow-[0_8px_32px_rgba(0,0,0,0.35)] overflow-hidden">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between p-5 pb-4 border-b border-[#262838] gap-3">
+              <div className="flex items-center gap-3">
+                <h2 className="text-base font-semibold font-heading text-[#F5F1E8] tracking-tight">
+                  Active Stockout Alerts
+                </h2>
+                {/* Slack Status Indicator */}
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold border",
+                    slackStatus.configured
+                      ? "bg-[#34D399]/10 text-[#34D399] border-[#34D399]/30"
+                      : "bg-[#8B87A0]/10 text-[#8B87A0] border-[#8B87A0]/30"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "w-1.5 h-1.5 rounded-full",
+                      slackStatus.configured ? "bg-[#34D399] animate-pulse" : "bg-[#8B87A0]"
+                    )}
+                  />
+                  Slack: {slackStatus.configured ? "Connected" : "Not configured"}
+                </span>
+              </div>
+
+              <div className="w-36">
+                <Select value={alertFilter} onValueChange={(val) => val && setAlertFilter(val)}>
+                  <SelectTrigger className="h-8 text-xs bg-[#1C1E2B] border-[#262838] text-[#F5F1E8] focus:ring-[#FFB627]/40">
+                    <SelectValue placeholder="Filter" />
+                  </SelectTrigger>
+                  <SelectContent className="bg-[#14151F] border-[#262838] text-[#F5F1E8]">
+                    <SelectItem value="all">All Risks</SelectItem>
+                    <SelectItem value="high">High Risk</SelectItem>
+                    <SelectItem value="medium">Medium Risk</SelectItem>
+                    <SelectItem value="low">Low Risk</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-b border-[#262838] hover:bg-transparent">
+                    <TableHead className="pl-5 text-[#8B87A0] text-xs">SKU</TableHead>
+                    <TableHead className="text-[#8B87A0] text-xs">Risk Level</TableHead>
+                    <TableHead className="text-[#8B87A0] text-xs">Days to Stockout</TableHead>
+                    <TableHead className="text-[#8B87A0] text-xs">Current vs Forecast</TableHead>
+                    <TableHead className="text-right pr-5 text-[#8B87A0] text-xs">Logged</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {filteredAlerts.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={5} className="text-center py-8 text-xs text-[#8B87A0]">
+                        No active stockout alerts for current filter.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    filteredAlerts.map((alert, idx) => (
+                      <TableRow
+                        key={alert.id ?? `alert-${idx}`}
+                        className={cn(
+                          "cursor-pointer hover:bg-[#1C1E2B]/80 transition-colors border-b border-[#262838]/60",
+                          alert.id &&
+                            newAlertIds.has(alert.id) &&
+                            "bg-[#FF6B35]/15 animate-pulse"
+                        )}
+                        onClick={() => setSelectedAlert(alert)}
+                      >
+                        <TableCell className="font-medium pl-5 text-[#F5F1E8]">
+                          <div className="font-heading">{alert.sku}</div>
+                          <div className="text-[11px] text-[#8B87A0]">{alert.skuName}</div>
+                        </TableCell>
+
+                        <TableCell>
+                          <span
+                            className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${riskBadgeStyle(
+                              alert.riskLevel
+                            )}`}
+                          >
+                            {alert.riskLevel}
+                          </span>
+                        </TableCell>
+
+                        <TableCell>
+                          {alert.daysUntilStockout != null ? (
+                            <span
+                              className={
+                                alert.daysUntilStockout <= 5
+                                  ? "text-[#FF6B35] font-semibold"
+                                  : "text-[#F5F1E8]"
+                              }
+                            >
+                              {alert.daysUntilStockout} days
+                            </span>
+                          ) : (
+                            <span className="text-[#8B87A0]">N/A</span>
+                          )}
+                        </TableCell>
+
+                        <TableCell className="text-xs">
+                          <span className="text-[#F5F1E8]">
+                            {(alert.currentStock ?? 0).toLocaleString()}
+                          </span>
+                          <span className="text-[#8B87A0]"> / </span>
+                          <span className="text-[#FF6B35] font-semibold">
+                            {(alert.forecastedDemand ?? 0).toLocaleString()}
+                          </span>
+                        </TableCell>
+
+                        <TableCell className="text-right text-[#8B87A0] text-xs pr-5 font-mono">
+                          {alert.createdAt
+                            ? new Date(alert.createdAt).toLocaleDateString()
+                            : "N/A"}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </div>
+
+        {/* Audit Trail Panel (5 cols) */}
+        <div className="lg:col-span-5">
+          <AuditTrailPanel logs={auditLogs} limit={6} showViewAll />
+        </div>
+      </div>
+
+      {/* ─── Alert Detail Drawer (Restyled for Solar Storm) ──────── */}
       <Sheet open={!!selectedAlert} onOpenChange={(open) => !open && setSelectedAlert(null)}>
-        <SheetContent>
+        <SheetContent className="bg-[#14151F] border-l border-[#262838] text-[#F5F1E8]">
           <SheetHeader>
-            <SheetTitle>Alert Details</SheetTitle>
-            <SheetDescription>Actionable insights for {selectedAlert?.sku}</SheetDescription>
+            <SheetTitle className="text-xl font-bold font-heading text-[#F5F1E8]">
+              Alert Deep Inspection
+            </SheetTitle>
+            <SheetDescription className="text-xs text-[#8B87A0]">
+              Actionable telemetry insights for {selectedAlert?.sku}
+            </SheetDescription>
           </SheetHeader>
+
           {selectedAlert && (
-            <div className="mt-6 space-y-4">
+            <div className="mt-6 space-y-5">
               <div>
-                <div className="text-sm font-medium text-muted-foreground mb-1">Item Name</div>
-                <div className="text-lg font-semibold">{selectedAlert.skuName}</div>
+                <div className="text-xs font-medium text-[#8B87A0] mb-1">Item Identification</div>
+                <div className="text-lg font-semibold font-heading text-[#F5F1E8]">
+                  {selectedAlert.skuName}
+                </div>
+                <span className="text-xs font-mono text-[#8B87A0]">{selectedAlert.sku}</span>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="p-4 bg-muted rounded-lg border">
-                  <div className="text-xs font-medium text-muted-foreground mb-1">Current Stock</div>
-                  <div className="text-2xl font-bold">{selectedAlert.currentStock.toLocaleString()}</div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="p-3.5 bg-[#1C1E2B] rounded-lg border border-[#262838]">
+                  <div className="text-[11px] text-[#8B87A0] mb-1 uppercase font-medium">Current Stock</div>
+                  <div className="text-2xl font-bold font-heading text-[#F5F1E8]">
+                    {selectedAlert.currentStock.toLocaleString()}
+                  </div>
                 </div>
-                <div className="p-4 bg-muted rounded-lg border">
-                  <div className="text-xs font-medium text-muted-foreground mb-1">Forecasted Demand</div>
-                  <div className="text-2xl font-bold text-destructive">{selectedAlert.forecastedDemand.toLocaleString()}</div>
+                <div className="p-3.5 bg-[#1C1E2B] rounded-lg border border-[#262838]">
+                  <div className="text-[11px] text-[#8B87A0] mb-1 uppercase font-medium">Forecasted Demand</div>
+                  <div className="text-2xl font-bold font-heading text-[#FF6B35]">
+                    {selectedAlert.forecastedDemand.toLocaleString()}
+                  </div>
                 </div>
               </div>
-              <div className="p-4 border rounded-lg bg-card">
-                <div className="text-xs font-semibold text-muted-foreground mb-2 uppercase tracking-wide">
-                  AI Recommendation
+
+              <div className="p-4 rounded-lg bg-[#1C1E2B]/80 border border-[#262838] space-y-2">
+                <div className="text-xs font-semibold text-[#FFB627] tracking-wide flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-[#FFB627]" />
+                  Decision Engine Recommendation
                 </div>
-                <p className="text-sm leading-relaxed">
-                  Based on a {selectedAlert.daysUntilStockout}-day window until potential stockout,
-                  an expedited purchase order is recommended. A draft PO has been generated in the PO Approval Queue.
+                <p className="text-xs leading-relaxed text-[#F5F1E8]/90">
+                  With a projected stockout horizon of {selectedAlert.daysUntilStockout} days, an automated draft purchase order has been queued in the approval pipeline. Cross-store inventory surplus was evaluated and determined insufficient.
                 </p>
               </div>
-              <div className="flex gap-2">
-                <Badge className={cn("text-xs", riskColorClass(selectedAlert.riskLevel))}>
+
+              <div className="flex gap-2 pt-2">
+                <span className={`text-xs px-3 py-1 rounded-full border font-semibold ${riskBadgeStyle(selectedAlert.riskLevel)}`}>
                   {selectedAlert.riskLevel} risk
-                </Badge>
-                <Badge variant="outline" className="text-xs">
+                </span>
+                <span className="text-xs px-3 py-1 rounded-full bg-[#1C1E2B] text-[#8B87A0] border border-[#262838]">
                   {selectedAlert.daysUntilStockout} days remaining
-                </Badge>
+                </span>
               </div>
             </div>
           )}
