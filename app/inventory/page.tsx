@@ -161,20 +161,14 @@ export default function InventoryPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-3xl font-bold tracking-tight">Inventory Registry</h1>
-            {status.has_dataset ? (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
-                <Database className="h-3 w-3" /> Live Dataset ({status.row_count?.toLocaleString()} rows)
-              </span>
-            ) : (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-0.5 rounded-full">
-                No Dataset Uploaded
-              </span>
-            )}
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
+              <Database className="h-3 w-3" /> Live Database ({status.row_count ? status.row_count.toLocaleString() : "Connected"})
+            </span>
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">
             {selectedCategory
               ? `Viewing SKUs and stock records in ${selectedCategory}`
-              : "Explore SKU registry, real-time category risk, and manual stock reconciliations"}
+              : "Explore SKU registry, real-time category risk, and stock reconciliations powered by database"}
           </p>
         </div>
 
@@ -184,7 +178,7 @@ export default function InventoryPage() {
             <button
               type="button"
               onClick={handleResetDataset}
-              title="Clear uploaded dataset to test empty state"
+              title="Reset inventory records"
               className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-card hover:bg-muted text-muted-foreground text-xs font-semibold px-3 py-2 transition-colors"
             >
               <RotateCcw className="h-3.5 w-3.5" />
@@ -194,8 +188,8 @@ export default function InventoryPage() {
         </div>
       </div>
 
-      {/* ── Summary Stats Pills (Only when dataset exists) ── */}
-      {status.has_dataset && categories.length > 0 && !selectedCategory && (
+      {/* ── Summary Stats Pills ── */}
+      {categories.length > 0 && !selectedCategory && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card className="p-4 shadow-sm border bg-card/60 backdrop-blur-sm">
             <div className="text-xs font-medium text-muted-foreground">Categories</div>
@@ -216,26 +210,28 @@ export default function InventoryPage() {
         </div>
       )}
 
-      {/* ── LEVEL 1: Empty State (When no dataset is uploaded) ── */}
-      {!status.has_dataset && categories.length === 0 && !loading && (
-        <Card className="border-2 border-dashed border-border/80 bg-card/30 p-12 text-center rounded-2xl shadow-sm">
+      {/* ── LEVEL 1: Syncing State (When DB records are loading or empty) ── */}
+      {categories.length === 0 && !loading && (
+        <Card className="border border-border/80 bg-card/30 p-12 text-center rounded-2xl shadow-sm">
           <div className="max-w-md mx-auto space-y-4">
             <div className="mx-auto w-14 h-14 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
-              <FileSpreadsheet className="h-7 w-7" />
+              <Database className="h-7 w-7" />
             </div>
             <div>
-              <h2 className="text-xl font-bold text-foreground">No Inventory Dataset Loaded</h2>
+              <h2 className="text-xl font-bold text-foreground">Database Connected</h2>
               <p className="text-sm text-muted-foreground mt-1.5 leading-relaxed">
-                To prevent false predictions, this registry contains <strong>no hardcoded fallback values</strong>.
-                Upload your inventory or demand dataset to dynamically generate category valuation, stockout alerts, and SKU records.
+                Loading SKU registry and category aggregations directly from the database.
               </p>
             </div>
             <div className="pt-2">
-              <UploadCSVButton variant="hero" onUploadSuccess={fetchData} />
+              <button
+                type="button"
+                onClick={fetchData}
+                className="inline-flex items-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+              >
+                <RotateCcw className="h-4 w-4" /> Refresh Database Records
+              </button>
             </div>
-            <p className="text-xs text-muted-foreground/70">
-              Supports CSV or Excel files with SKU, stock levels, price, and demand history.
-            </p>
           </div>
         </Card>
       )}

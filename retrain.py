@@ -10,7 +10,7 @@ def retrain_model(csv_path: str = None, model_path: str = None) -> bool:
     if csv_path is None:
         csv_path = os.path.join(_BASE_DIR, "demand_sample.csv")
     if model_path is None:
-        model_path = os.path.join(_BASE_DIR, "model.pkl")
+        model_path = os.path.join(_BASE_DIR, "saved_models", "xgboost_model.pkl")
     """
     Reads the raw dataset, performs feature engineering, trains XGBoost,
     and overwrites model.pkl. Robust to various column formats and edge cases.

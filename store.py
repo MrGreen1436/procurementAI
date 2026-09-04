@@ -94,30 +94,104 @@ def load_state_from_csv(csv_path: str = "demand_sample.csv"):
     except Exception as e:
         print(f"Failed to load state from CSV: {e}")
 
-# Call it once on startup
-load_state_from_csv()
+def load_state_from_db():
+    """
+    Populate MOCK_INVENTORY, MOCK_SUPPLIERS, and dynamic RISK_ALERTS
+    directly from the SQL database (procurement.db).
+    """
+    global MOCK_INVENTORY, MOCK_SUPPLIERS, RISK_ALERTS
+    try:
+        from database import db_get_sku_state_map, db_seed_if_empty
+        db_seed_if_empty()
+        sku_map = db_get_sku_state_map()
+        if not sku_map:
+            load_state_from_csv()
+            return
+
+        MOCK_INVENTORY.clear()
+        MOCK_SUPPLIERS.clear()
+        MOCK_POS.clear()
+        dynamic_alerts = []
+
+        for sku, info in sku_map.items():
+            current_stock = info["current_stock"]
+            reorder_point = info["reorder_point"]
+            avg_price     = info["avg_price"]
+            site_id       = info["site_id"]
+            supplier_name = info["supplier_name"]
+
+            MOCK_INVENTORY[sku] = InventoryItem(
+                sku_id=sku,
+                site_id=site_id,
+                current_stock=current_stock,
+                reorder_point=reorder_point,
+                reorder_level=reorder_point,
+            )
+
+            # Generate dynamic suppliers from database
+            sup_id = f"SUP-{abs(hash(sku)) % 90 + 10:02d}"
+            sup_backup_id = f"SUP-{abs(hash(sku + 'B')) % 90 + 10:02d}"
+            MOCK_SUPPLIERS[sku] = [
+                Supplier(
+                    supplier_id=sup_id,
+                    name=supplier_name or f"Primary Supplier ({sku})",
+                    unit_price=round(avg_price * 0.95, 2),
+                    lead_time_days=10,
+                    reliability_score=0.92,
+                ),
+                Supplier(
+                    supplier_id=sup_backup_id,
+                    name=f"Secondary Supplier ({sku})",
+                    unit_price=round(avg_price * 1.05, 2),
+                    lead_time_days=16,
+                    reliability_score=0.82,
+                ),
+            ]
+
+            # Dynamic risk alert if stock is below or near reorder point
+            if current_stock <= reorder_point:
+                daily_d = info.get("avg_daily_demand", 10.0)
+                days_left = max(1, int(current_stock / daily_d)) if daily_d > 0 else 5
+                risk_lvl = "high" if days_left <= 7 else "medium"
+                dynamic_alerts.append(
+                    RiskAlert(
+                        alert_id=f"ALERT-DB-{sku}",
+                        sku_id=sku,
+                        site_id=site_id,
+                        risk_level=risk_lvl,
+                        reason=f"Current stock ({current_stock}) below reorder point ({reorder_point}) based on live database records.",
+                        predicted_stockout_date=date.today() + timedelta(days=days_left),
+                    )
+                )
+
+        if dynamic_alerts:
+            RISK_ALERTS = dynamic_alerts
+        print(f"Loaded {len(MOCK_INVENTORY)} SKUs directly from database into store.py")
+    except Exception as e:
+        print(f"Failed to load state from DB: {e}, falling back to CSV")
+        load_state_from_csv()
+
+
+# Call it once on startup (database primary)
+try:
+    load_state_from_db()
+except Exception:
+    load_state_from_csv()
 
 # ---------------------------------------------------------------
-# Risk Alerts — static seed; updated by email parser (Task 4)
+# Risk Alerts — initialized above from database dynamically
 # ---------------------------------------------------------------
-RISK_ALERTS: list[RiskAlert] = [
-    RiskAlert(
-        alert_id="ALERT-001",
-        sku_id="SKU-001",
-        site_id="SITE-A",
-        risk_level="high",
-        reason="Current stock (120) below reorder point (200); forecast demand rising",
-        predicted_stockout_date=date.today() + timedelta(days=9),
-    ),
-    RiskAlert(
-        alert_id="ALERT-002",
-        sku_id="SKU-003",
-        site_id="SITE-C",
-        risk_level="high",
-        reason="Current stock (30) critically below reorder point (100)",
-        predicted_stockout_date=date.today() + timedelta(days=4),
-    ),
-]
+if not RISK_ALERTS:
+    RISK_ALERTS: list[RiskAlert] = [
+        RiskAlert(
+            alert_id="ALERT-001",
+            sku_id="SKU-001",
+            site_id="SITE-A",
+            risk_level="high",
+            reason="Current stock below reorder point",
+            predicted_stockout_date=date.today() + timedelta(days=9),
+        ),
+    ]
 
 # ---------------------------------------------------------------
 # Supplier Outreach state (from shashi — tracks live call status)

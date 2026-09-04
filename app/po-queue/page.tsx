@@ -18,15 +18,17 @@ import {
   Clock,
   CheckCircle2,
   XCircle,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /* ─── Helpers ────────────────────────────────────────────── */
-const formatCurrency = (val: number) =>
+const formatCurrency = (val: number, decimals: number = 2) =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: 0,
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
   }).format(val);
 
 const RISK_STYLES: Record<RiskLevel, { badge: string; border: string; icon: string }> = {
@@ -121,13 +123,25 @@ function POCard({
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <DollarSign className="h-3 w-3" /> Total Cost
             </div>
-            <span className="text-sm font-medium">{formatCurrency(po.totalCost)}</span>
+            <span className="text-sm font-medium">{formatCurrency(po.totalCost, 2)}</span>
           </div>
         </div>
 
-        {/* Unit cost pill */}
-        <div className="text-xs text-muted-foreground">
-          Unit cost: <span className="font-medium text-foreground">{formatCurrency(po.unitCost)}</span>
+        {/* Unit cost row with exact quoted price */}
+        <div className="flex items-center justify-between py-2 px-3 rounded-lg bg-muted/40 border border-border/60">
+          <span className="text-xs text-muted-foreground font-medium flex items-center gap-1.5">
+            <DollarSign className="h-3.5 w-3.5 text-primary" /> Negotiated Unit Price:
+          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-bold text-foreground tabular-nums">
+              ${Number(po.unitCost).toFixed(2)}
+            </span>
+            {po.quotedByCall && (
+              <Badge className="bg-emerald-500/15 text-emerald-500 hover:bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-semibold px-2 py-0.5">
+                AI Quoted
+              </Badge>
+            )}
+          </div>
         </div>
 
         {/* Agent explanation (collapsible) */}
@@ -200,15 +214,46 @@ function POCard({
 export default function POQueuePage() {
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [riskFilter, setRiskFilter] = useState<string>("all");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
-  useEffect(() => {
-    fetchPOs().then((data) => {
+  const loadPOs = async () => {
+    try {
+      const data = await fetchPOs();
       setPOs(data);
+    } catch {} finally {
       setLoading(false);
-    });
+      setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    loadPOs();
+
+    // WebSocket real-time subscription for live AI call quotes
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket("ws://127.0.0.1:8000/ws");
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === "PO_UPDATED" || msg.type === "SUPPLIER_CALL_COMPLETED") {
+            loadPOs();
+          }
+        } catch {}
+      };
+    } catch {}
+
+    return () => {
+      if (ws) ws.close();
+    };
   }, []);
+
+  const handleRefresh = () => {
+    setIsRefreshing(true);
+    loadPOs();
+  };
 
   // Optimistic approve
   const handleApprove = async (id: string) => {
@@ -310,7 +355,16 @@ export default function POQueuePage() {
             Clear filters
           </button>
         )}
-        <span className="text-xs text-muted-foreground ml-auto">
+        <button
+          type="button"
+          onClick={handleRefresh}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border text-xs font-medium hover:bg-muted transition-colors text-muted-foreground hover:text-foreground ml-auto"
+          title="Refresh purchase orders"
+        >
+          <RefreshCw className={cn("h-3.5 w-3.5", isRefreshing && "animate-spin text-primary")} />
+          Refresh
+        </button>
+        <span className="text-xs text-muted-foreground">
           Showing {filtered.length} of {pos.length} POs
         </span>
       </div>

@@ -10,6 +10,7 @@ import {
   Activity,
   PhoneCall,
   Package,
+  ShieldCheck,
   Menu,
   X,
   Moon,
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Simulator", href: "/simulator", icon: Activity },
   { name: "Supplier Calls", href: "/outreach", icon: PhoneCall },
+  { name: "Audit Trail", href: "/audit-trail", icon: ShieldCheck },
 ];
 
 export function Sidebar() {

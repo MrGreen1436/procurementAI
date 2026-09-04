@@ -1,4 +1,4 @@
-﻿"""
+"""
 simulator.py ΓÇö What-If Scenario Simulation Engine for ProcurementAI.
 
 Simulates supply chain disruptions, supplier lead-time shifts, and demand surges
@@ -19,8 +19,33 @@ def _get_active_df() -> pd.DataFrame:
     base_dir = Path(__file__).parent
     uploaded = base_dir / "uploaded_dataset.csv"
     default = base_dir / "demand_sample.csv"
-    data_file = uploaded if uploaded.exists() else default
-    df = pd.read_csv(data_file)
+    if uploaded.exists():
+        df = pd.read_csv(uploaded)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+    elif default.exists():
+        df = pd.read_csv(default)
+        df["date"] = pd.to_datetime(df["date"])
+        return df
+
+    # Fallback to database
+    try:
+        from database import db_get_sku_state_map
+        sku_map = db_get_sku_state_map()
+        if sku_map:
+            rows = []
+            for sku, info in sku_map.items():
+                daily_d = info.get("avg_daily_demand", 10.0)
+                price = info.get("avg_price", 50.0)
+                rows.append({"sku_id": sku, "demand": daily_d, "price": price, "date": "2026-01-01"})
+            df = pd.DataFrame(rows)
+            df["date"] = pd.to_datetime(df["date"])
+            return df
+    except Exception:
+        pass
+
+    rows = [{"sku_id": f"P{i:04d}", "demand": 20.0, "price": 50.0, "date": "2026-01-01"} for i in range(1, 21)]
+    df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["date"])
     return df
 

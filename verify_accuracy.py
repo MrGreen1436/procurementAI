@@ -79,8 +79,8 @@ def cross_verify(sku_id: str = "P0001", excel_path: str = "retail_store_inventor
     features['day'] = features['date'].dt.day
     features['dayofweek'] = features['date'].dt.dayofweek
     
-    # Load model.pkl
-    model_path = "model.pkl"
+    # Load model from saved_models
+    model_path = os.path.join("saved_models", "xgboost_model.pkl") if os.path.exists(os.path.join("saved_models", "xgboost_model.pkl")) else "model.pkl"
     xgb_preds = None
     if os.path.exists(model_path):
         try:

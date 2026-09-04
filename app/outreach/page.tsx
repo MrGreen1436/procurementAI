@@ -293,9 +293,9 @@ export default function OutreachPage() {
                 }}
                 className="w-full h-9 px-3 text-sm rounded-lg border bg-background focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
               >
-                {alerts.length === 0 && <option value="">Loading alerts…</option>}
+                {alerts.length === 0 && <option key="loading-placeholder" value="">Loading alerts…</option>}
                 {alerts.map((a, i) => (
-                  <option key={a.sku ?? i} value={a.sku}>
+                  <option key={`${a.sku || "alert"}-${i}`} value={a.sku}>
                     {a.sku} — {a.riskLevel.toUpperCase()} Risk
                   </option>
                 ))}

@@ -39,104 +39,135 @@ import pandas as pd
 from datetime import date, timedelta
 import os
 import numpy as np
+from typing import Optional
 
-# Load XGBoost model if it exists
+# ---------------------------------------------------------------
+# Load Newly Trained Models from saved_models/
+# ---------------------------------------------------------------
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_SAVED_MODELS_DIR = os.path.join(_BASE_DIR, "saved_models")
+
+_ets_models = {}
+_label_encoders = {}
+_xgboost_model = None
+
 try:
-    _xgboost_model = joblib.load("model.pkl")
-    logger.info("Loaded model.pkl successfully.")
+    ets_path = os.path.join(_SAVED_MODELS_DIR, "ets_models.pkl")
+    if os.path.exists(ets_path):
+        _ets_models = joblib.load(ets_path)
+        logger.info("Loaded new ETS models from %s (%d models).", ets_path, len(_ets_models))
 except Exception as e:
-    _xgboost_model = None
-    logger.warning("Could not load model.pkl, using fallback. Error: %s", e)
+    logger.warning("Could not load saved_models/ets_models.pkl: %s", e)
+
+try:
+    encoders_path = os.path.join(_SAVED_MODELS_DIR, "label_encoders.pkl")
+    if os.path.exists(encoders_path):
+        _label_encoders = joblib.load(encoders_path)
+        logger.info("Loaded label encoders from %s.", encoders_path)
+except Exception as e:
+    logger.warning("Could not load saved_models/label_encoders.pkl: %s", e)
+
+try:
+    xgb_path = os.path.join(_SAVED_MODELS_DIR, "xgboost_model.pkl")
+    if os.path.exists(xgb_path):
+        _xgboost_model = joblib.load(xgb_path)
+        logger.info("Loaded new XGBoost model from %s.", xgb_path)
+except Exception as e:
+    logger.warning("Could not load saved_models/xgboost_model.pkl: %s", e)
+
+
+def get_model_daily_predictions(sku_id: str, horizon_days: int = 30) -> Optional[np.ndarray]:
+    """Get high-precision daily demand forecast for a SKU using the new models."""
+    clean_sku = sku_id.upper().strip()
+    prod_enc = _label_encoders.get("Product ID")
+
+    if _ets_models and prod_enc:
+        try:
+            classes = list(prod_enc.classes_)
+            target_c = None
+            if clean_sku in classes:
+                target_c = clean_sku
+            else:
+                for c in classes:
+                    if clean_sku in c or c in clean_sku:
+                        target_c = c
+                        break
+            if target_c and target_c in classes:
+                p_idx = classes.index(target_c)
+                matching = [k for k in _ets_models.keys() if k.endswith(f"_{p_idx}")]
+                if matching:
+                    preds_list = []
+                    for k in matching:
+                        m = _ets_models[k]
+                        preds_list.append(np.clip(np.array(m.forecast(horizon_days), dtype=float), 0, None))
+                    if preds_list:
+                        return np.mean(preds_list, axis=0)
+        except Exception as e:
+            logger.debug("ETS forecast exception: %s", e)
+    return None
+
 
 def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
-    """Return demand forecast for a SKU over the given horizon."""
-    
-    active_csv = "uploaded_dataset.csv" if os.path.exists("uploaded_dataset.csv") else "demand_sample.csv"
-    
-    # Try using XGBoost model
-    if _xgboost_model is not None and os.path.exists(active_csv):
-        try:
-            df = pd.read_csv(active_csv)
-            sku_data = df[df['sku_id'] == sku_id]
-            if not sku_data.empty:
-                last_price = float(sku_data['price'].iloc[-1])
-            else:
-                last_price = 150.0
-                
-            future_dates = [date.today() + timedelta(days=i) for i in range(horizon_days)]
-            
-            # Construct features
-            features = pd.DataFrame({'date': future_dates})
-            features['date'] = pd.to_datetime(features['date'])
-            features['price'] = last_price
-            features['promotion'] = 0
-            features['year'] = features['date'].dt.year
-            features['month'] = features['date'].dt.month
-            features['day'] = features['date'].dt.day
-            features['dayofweek'] = features['date'].dt.dayofweek
-            
-            # Dynamically fetch the expected feature columns
-            try:
-                expected_features = list(_xgboost_model.feature_names_in_)
-            except AttributeError:
-                expected_features = ['price', 'promotion', 'year', 'month', 'day', 'dayofweek'] # Fallback
-                
-            # Add dynamic SKU one-hot encoding based on what the model expects
-            for col in expected_features:
-                if col.startswith('sku_id_'):
-                    expected_sku = col.replace('sku_id_', '')
-                    features[col] = 1 if expected_sku == sku_id else 0
-                    
-            # Ensure X exactly matches expected columns
-            for col in expected_features:
-                if col not in features.columns:
-                    features[col] = 0
-            X = features[expected_features]
-            
-            # Predict
-            preds = _xgboost_model.predict(X)
-            total_predicted_demand = int(np.sum(preds))
-            
-            # Predict upcoming shortage
-            shortage_date = None
-            shortage_amount = 0
-            inv_item = MOCK_INVENTORY.get(sku_id)
-            if inv_item:
-                current_stock = inv_item.current_stock
-                for i, daily_pred in enumerate(preds):
-                    current_stock -= daily_pred
-                    if current_stock < 0 and shortage_date is None:
-                        shortage_date = future_dates[i]
-                if current_stock < 0:
-                    shortage_amount = int(abs(current_stock))
-            
-            result = ForecastResult(
-                sku_id=sku_id,
-                horizon_days=int(horizon_days),
-                predicted_demand=total_predicted_demand,
-                confidence_low=int(total_predicted_demand * 0.85),
-                confidence_high=int(total_predicted_demand * 1.15),
-                projected_shortage_date=shortage_date,
-                projected_shortage_amount=shortage_amount,
-            )
-            return result.model_dump(mode="json")
-        except Exception as e:
-            logger.error("XGBoost prediction failed: %s", e)
-            
-    # Fallback if XGBoost fails or not found
-    base = 300 if sku_id == "SKU-001" else (150 if sku_id == "SKU-002" else 120)
-    
+    """Return demand forecast for a SKU over the given horizon, using the new models first."""
+    future_dates = [date.today() + timedelta(days=i) for i in range(horizon_days)]
+
+    # 1. Primary: Use new trained models from saved_models
+    model_preds = get_model_daily_predictions(sku_id, horizon_days)
+    if model_preds is not None and len(model_preds) >= horizon_days:
+        daily_preds = model_preds[:horizon_days]
+        total_predicted_demand = max(1, int(np.sum(daily_preds)))
+
+        # Predict upcoming shortage against current inventory
+        shortage_date = None
+        shortage_amount = 0
+        inv_item = MOCK_INVENTORY.get(sku_id)
+        if inv_item:
+            current_stock = inv_item.current_stock
+            for i, daily_pred in enumerate(daily_preds):
+                current_stock -= daily_pred
+                if current_stock < 0 and shortage_date is None:
+                    shortage_date = future_dates[i]
+            if current_stock < 0:
+                shortage_amount = int(abs(current_stock))
+
+        result = ForecastResult(
+            sku_id=sku_id,
+            horizon_days=int(horizon_days),
+            predicted_demand=total_predicted_demand,
+            confidence_low=int(total_predicted_demand * 0.85),
+            confidence_high=int(total_predicted_demand * 1.15),
+            projected_shortage_date=shortage_date,
+            projected_shortage_amount=shortage_amount,
+        )
+        return result.model_dump(mode="json")
+
+    # 2. Secondary: Fallback to database demand history
+    history_records = []
+    try:
+        from database import db_get_sku_demand_history
+        history_records = db_get_sku_demand_history(sku_id)
+    except Exception as dbe:
+        logger.debug("Database demand history fetch: %s", dbe)
+
+    inv_item = MOCK_INVENTORY.get(sku_id)
+    if history_records:
+        avg_d = sum(r["demand"] for r in history_records) / len(history_records)
+        base = max(10, int(avg_d * horizon_days))
+    elif inv_item:
+        base = max(10, int(inv_item.reorder_point * (horizon_days / 14.0)))
+    else:
+        base = 120
+
     shortage_date = None
     shortage_amount = 0
-    inv_item = MOCK_INVENTORY.get(sku_id)
     if inv_item:
         current_stock = inv_item.current_stock
         daily_demand = base / max(1, horizon_days)
         if current_stock < base:
-            days_until_shortage = int(current_stock / daily_demand)
+            days_until_shortage = int(current_stock / daily_demand) if daily_demand > 0 else 5
             shortage_date = date.today() + timedelta(days=days_until_shortage)
             shortage_amount = int(base - current_stock)
-            
+
     result = ForecastResult(
         sku_id=sku_id,
         horizon_days=int(horizon_days),
@@ -147,6 +178,7 @@ def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
         projected_shortage_amount=shortage_amount,
     )
     return result.model_dump(mode="json")
+
 
 
 def get_suppliers(sku_id: str) -> dict:

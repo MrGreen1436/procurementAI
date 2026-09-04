@@ -18,7 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 // Lucide
-import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart } from "lucide-react";
+import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Database } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -103,7 +103,7 @@ export default function DashboardPage() {
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
 
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [selectedSku, setSelectedSku] = useState<string>("");
+  const [selectedSku, setSelectedSku] = useState<string>("ALL");
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
 
@@ -119,21 +119,51 @@ export default function DashboardPage() {
     fetchInventoryHistory().then((data) => {
       setHistory(data);
       if (data && data.length > 0) {
-        const skus = Array.from(new Set(data.map((h) => h.sku)));
+        const skus = Array.from(
+          new Set(
+            data
+              .map((h) => h.sku)
+              .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+          )
+        );
         if (skus.length > 0) {
-          setSelectedSku((prev) => (prev && skus.includes(prev) ? prev : skus[0]));
+          setSelectedSku((prev) => (prev && skus.includes(prev) ? prev : (skus.includes("ALL") ? "ALL" : skus[0])));
         }
       }
     });
     fetchPOs().then(setPOs);
+
+    // Real-time sync with AI voice calls and PO updates
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket("ws://127.0.0.1:8000/ws");
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "PO_UPDATED" || msg.type === "SUPPLIER_CALL_COMPLETED") {
+            fetchPOs().then(setPOs);
+          }
+        } catch {}
+      };
+    } catch {}
+
+    return () => {
+      if (ws) ws.close();
+    };
   }, []);
 
-  const uniqueSkus = Array.from(new Set(history.map((h) => h.sku)));
+  const uniqueSkus = Array.from(
+    new Set(
+      history
+        .map((h) => h.sku)
+        .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+    )
+  );
 
   // Whenever uniqueSkus changes, ensure selectedSku points to a valid SKU
   useEffect(() => {
     if (uniqueSkus.length > 0 && (!selectedSku || !uniqueSkus.includes(selectedSku))) {
-      setSelectedSku(uniqueSkus[0]);
+      setSelectedSku(uniqueSkus.includes("ALL") ? "ALL" : uniqueSkus[0]);
     }
   }, [uniqueSkus, selectedSku]);
 
@@ -222,15 +252,20 @@ export default function DashboardPage() {
       {/* Header + Demo Buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
+              <Database className="h-3 w-3" /> Live Database Active
+            </span>
+          </div>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Real-time supply chain forecasting &amp; risk intelligence
+            Real-time supply chain forecasting &amp; risk intelligence from database
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
-          <label className="inline-flex items-center gap-2 rounded-lg border border-blue-500/40 bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 text-xs font-semibold px-3 py-2 transition-colors cursor-pointer">
-            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
-            Upload Dataset
+          <label className="inline-flex items-center gap-2 rounded-lg border border-border bg-card hover:bg-muted text-muted-foreground text-xs font-semibold px-3 py-2 transition-colors cursor-pointer" title="Optionally import or update records">
+            <Database className="h-3.5 w-3.5 text-primary" />
+            Import / Sync Data
             <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleUploadDataset} />
           </label>
           <button
@@ -322,15 +357,15 @@ export default function DashboardPage() {
                 </Select>
 
                 {/* SKU Select */}
-                <div className="w-32">
-                  <Select value={selectedSku} onValueChange={(val) => val && setSelectedSku(val)}>
+                <div className="w-36">
+                  <Select value={selectedSku || "ALL"} onValueChange={(val) => { if (val) setSelectedSku(val); }}>
                     <SelectTrigger className="h-8 text-xs">
                       <SelectValue placeholder="Select SKU" />
                     </SelectTrigger>
                     <SelectContent>
                       {uniqueSkus.map((sku) => (
                         <SelectItem key={sku} value={sku} className="text-xs">
-                          {sku}
+                          {sku === "ALL" ? "All Products" : sku}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -443,10 +478,17 @@ export default function DashboardPage() {
                     <span className="font-semibold text-sm">{po.sku}</span>
                     <Badge className={cn("text-xs", riskColorClass(po.riskLevel))}>{po.riskLevel}</Badge>
                   </div>
-                  <div className="text-xs text-muted-foreground mb-1">Supplier: {po.supplier}</div>
-                  <div className="flex justify-between text-xs font-medium">
-                    <span>Qty: {po.quantity.toLocaleString()}</span>
-                    <span>{formatCurrency(po.totalCost)}</span>
+                  <div className="text-xs text-muted-foreground mb-1.5 flex items-center justify-between">
+                    <span className="truncate">Supplier: {po.supplier}</span>
+                    {po.quotedByCall && (
+                      <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 border border-emerald-500/20 px-1.5 py-0.5 rounded shrink-0">
+                        AI Quoted
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex justify-between items-center text-xs font-medium">
+                    <span>Qty: {po.quantity.toLocaleString()} @ <span className="font-semibold text-foreground">${Number(po.unitCost).toFixed(2)}</span></span>
+                    <span className="font-semibold">{formatCurrency(po.totalCost)}</span>
                   </div>
                 </div>
               ))}

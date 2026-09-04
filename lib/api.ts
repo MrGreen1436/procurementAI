@@ -1,4 +1,4 @@
-import { Alert, EmailParseResult, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult } from "../types";
+import { Alert, EmailParseResult, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult, AuditLogEntry } from "../types";
 import { MOCK_ALERTS, MOCK_INVENTORY_HISTORY, MOCK_KPIS, MOCK_POS, MOCK_QA_PAIRS } from "./mockData";
 
 // Sleep utility to simulate network latency
@@ -18,7 +18,24 @@ export async function fetchKPIs(): Promise<KPISummary> {
 export async function fetchAlerts(): Promise<Alert[]> {
   try {
     const res = await fetch(`http://127.0.0.1:8000/risk/alerts?t=${Date.now()}`);
-    if (res.ok) return await res.json();
+    if (res.ok) {
+      const data = await res.json();
+      return data.map((d: any) => {
+        const days = d.predicted_stockout_date
+          ? Math.max(1, Math.round((new Date(d.predicted_stockout_date).getTime() - Date.now()) / (1000 * 60 * 60 * 24)))
+          : (d.daysUntilStockout ?? 1);
+        return {
+          id: d.id || d.alert_id || `alert-${Math.random()}`,
+          sku: d.sku || d.sku_id || "SKU-001",
+          skuName: d.skuName || d.sku_id || "Product",
+          riskLevel: d.riskLevel || d.risk_level || "high",
+          daysUntilStockout: days,
+          currentStock: d.currentStock ?? d.current_stock ?? 150,
+          forecastedDemand: d.forecastedDemand ?? d.forecasted_demand ?? 950,
+          createdAt: d.createdAt || d.created_at || new Date().toISOString(),
+        };
+      });
+    }
   } catch (e) {
     console.error("fetchAlerts failed, falling back to mock", e);
   }
@@ -217,5 +234,29 @@ export async function resetInventoryDataset() {
   });
   if (!res.ok) throw new Error(`Reset failed: ${res.status}`);
   return res.json();
+}
+
+export async function fetchAuditLogs(params?: {
+  entityType?: string;
+  action?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<{ total: number; logs: AuditLogEntry[] }> {
+  try {
+    const q = new URLSearchParams();
+    if (params?.entityType && params.entityType !== "all") q.set("entity_type", params.entityType);
+    if (params?.action && params.action !== "all") q.set("action", params.action);
+    if (params?.search) q.set("search", params.search);
+    if (params?.limit) q.set("limit", params.limit.toString());
+    if (params?.offset) q.set("offset", params.offset.toString());
+    q.set("t", Date.now().toString());
+
+    const res = await fetch(`http://127.0.0.1:8000/api/audit-trail?${q.toString()}`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchAuditLogs error:", e);
+  }
+  return { total: 0, logs: [] };
 }
 

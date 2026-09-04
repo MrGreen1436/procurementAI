@@ -71,7 +71,7 @@ class PurchaseOrder(BaseModel):
     total_cost: float
     reasoning: str
     status: Literal["auto_approved", "pending_approval", "rejected"]
-    generated_by: Literal["llm", "fallback"] = "llm"
+    generated_by: str = "llm"
     created_at: date = Field(default_factory=date.today)
     # Idempotent approval guard — never exposed to frontend, internal only
     feedback_applied: bool = Field(default=False, exclude=True)

@@ -26,6 +26,8 @@ export interface PurchaseOrder {
     whyQuantity: string;
     whyCost: string;
   };
+  quotedByCall?: boolean;
+  callQuotePrice?: number | null;
   createdAt: string;
 }
 
@@ -119,5 +121,16 @@ export interface InventoryDatasetStatus {
   has_dataset: boolean;
   filename?: string | null;
   row_count?: number;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  actor: string;
+  details: Record<string, any>;
+  status: "success" | "warning" | "info" | "failure";
+  createdAt: string;
 }
 
