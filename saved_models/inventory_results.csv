@@ -1,0 +1,6 @@
+model,MAE,RMSE,MAPE,R2,Accuracy
+XGBoost — Inventory,85.56,104.42,47.41,0.3536,52.59
+LightGBM — Inventory,86.09,105.29,47.59,0.3428,52.41
+Ensemble — Inventory,90.96,110.21,50.44,0.28,49.56
+LSTM — Inventory,112.68,130.12,65.86,-0.0035,34.14
+GRAND ENSEMBLE — Inventory,93.76,111.59,53.1,0.262,46.9
