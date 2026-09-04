@@ -15,6 +15,18 @@ MOCK_INVENTORY: dict[str, InventoryItem] = {}
 MOCK_SUPPLIERS: dict[str, list[Supplier]] = {}
 MOCK_POS: dict[str, PurchaseOrder] = {}
 
+# ---------------------------------------------------------------
+# Supplier Outreach extended data (Step 2 — Supplier Outreach)
+# Keyed by supplier_id. Stores mutable outreach call results
+# alongside the immutable Pydantic Supplier objects.
+# Fields:
+#   phone          — contact phone number (string)
+#   last_price     — last quoted unit price from simulate_supplier_call (float | None)
+#   last_checked   — ISO timestamp of the last simulated call (str | None)
+#   last_lead_time — last quoted lead time in days (int | None)
+# ---------------------------------------------------------------
+SUPPLIER_OUTREACH_DATA: dict[str, dict] = {}
+
 def load_state_from_csv(csv_path: str = "demand_sample.csv"):
     """
     Reads the dataset and populates MOCK_INVENTORY and MOCK_SUPPLIERS
@@ -55,22 +67,41 @@ def load_state_from_csv(csv_path: str = "demand_sample.csv"):
             # Supplier data: use real avg price from CSV, sensible lead times
             lead_time_days = 14
             reliability = round(max(0.70, min(0.99, 1.0 - (sku_df['demand'].std() / (avg_daily_demand + 1)) * 0.1)), 2)
+            primary_id = f"SUP-{abs(hash(sku)) % 90 + 10}"
+            backup_id  = f"SUP-{abs(hash(sku + 'B')) % 90 + 10}"
+
             MOCK_SUPPLIERS[sku] = [
                 Supplier(
-                    supplier_id=f"SUP-{abs(hash(sku)) % 90 + 10}",
+                    supplier_id=primary_id,
                     name=f"Primary Supplier ({sku})",
                     unit_price=round(avg_price * 0.95, 2),
                     lead_time_days=lead_time_days,
                     reliability_score=reliability,
                 ),
                 Supplier(
-                    supplier_id=f"SUP-{abs(hash(sku + 'B')) % 90 + 10}",
+                    supplier_id=backup_id,
                     name=f"Backup Supplier ({sku})",
                     unit_price=round(avg_price * 1.05, 2),
                     lead_time_days=lead_time_days + 7,
                     reliability_score=round(max(0.60, reliability - 0.10), 2),
                 ),
             ]
+
+            # Initialise outreach extended data for both suppliers
+            SUPPLIER_OUTREACH_DATA[primary_id] = {
+                "name":           f"Primary Supplier ({sku})",
+                "phone":          f"+1-800-{abs(hash(sku)) % 9000 + 1000}",
+                "last_price":     None,
+                "last_checked":   None,
+                "last_lead_time": None,
+            }
+            SUPPLIER_OUTREACH_DATA[backup_id] = {
+                "name":           f"Backup Supplier ({sku})",
+                "phone":          f"+1-800-{abs(hash(sku + 'B')) % 9000 + 1000}",
+                "last_price":     None,
+                "last_checked":   None,
+                "last_lead_time": None,
+            }
 
         print(f"Loaded {len(unique_skus)} SKUs dynamically into store.py")
     except Exception as e:
@@ -80,23 +111,39 @@ def load_state_from_csv(csv_path: str = "demand_sample.csv"):
 load_state_from_csv()
 
 # ---------------------------------------------------------------
-# Risk Alerts — static seed; updated by email parser (Task 4)
+# Risk Alerts — dynamically built from real inventory after CSV load
+# This ensures SKU IDs always match MOCK_INVENTORY keys.
 # ---------------------------------------------------------------
-RISK_ALERTS: list[RiskAlert] = [
-    RiskAlert(
-        alert_id="ALERT-001",
-        sku_id="SKU-001",
-        site_id="SITE-A",
-        risk_level="high",
-        reason="Current stock (120) below reorder point (200); forecast demand rising",
-        predicted_stockout_date=date.today() + timedelta(days=9),
-    ),
-    RiskAlert(
-        alert_id="ALERT-002",
-        sku_id="SKU-003",
-        site_id="SITE-C",
-        risk_level="high",
-        reason="Current stock (30) critically below reorder point (100)",
-        predicted_stockout_date=date.today() + timedelta(days=4),
-    ),
-]
+def _build_risk_alerts() -> list:
+    """Generate RISK_ALERTS from actual inventory state after CSV load."""
+    from datetime import date, timedelta
+    alerts = []
+    alert_num = 1
+    for sku_id, item in MOCK_INVENTORY.items():
+        stock = item.current_stock
+        reorder = item.reorder_point
+        if stock <= reorder:
+            days_left = max(1, int(stock / max(reorder / 14, 1)))
+            if stock <= reorder * 0.5:
+                risk = "high"
+                days_until = min(days_left, 7)
+            elif stock <= reorder:
+                risk = "high"
+                days_until = min(days_left, 14)
+            else:
+                risk = "medium"
+                days_until = days_left
+            alerts.append(RiskAlert(
+                alert_id=f"ALERT-{alert_num:03d}",
+                sku_id=sku_id,
+                site_id="SITE-DYNAMIC",
+                risk_level=risk,
+                reason=f"Current stock ({stock}) at or below reorder point ({reorder})",
+                predicted_stockout_date=date.today() + timedelta(days=days_until),
+            ))
+            alert_num += 1
+    return alerts
+
+
+RISK_ALERTS: list[RiskAlert] = _build_risk_alerts()
+print(f"Generated {len(RISK_ALERTS)} risk alerts from inventory")

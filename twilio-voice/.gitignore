@@ -1,0 +1,8 @@
+# Ignore the SQLite database file
+quotes.db
+
+# Environment secrets
+.env
+
+# Node modules
+node_modules/

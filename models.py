@@ -14,6 +14,16 @@ class InventoryItem(BaseModel):
     site_id: str
     current_stock: int
     reorder_point: int
+    # reorder_level: explicit threshold used by supplier outreach is_low_stock().
+    # Defaults to 0 so is_low_stock() falls back to reorder_point when unset.
+    # Prajwal / forecasting team can set this to 1.5× avg monthly usage per SKU.
+    reorder_level: int = Field(default=0, description="Stock level at which supplier outreach triggers (0 = use reorder_point)")
+    # Decision Engine fields — added with safe defaults so existing data still works
+    hours_since_update: float = Field(default=12.0, description="Hours since inventory was last verified")
+    mismatch_count: int = Field(default=0, description="Number of physical-vs-system stock mismatches")
+    in_stock_at_other_site: bool = Field(default=False, description="True if any other site has surplus of this SKU")
+    retrieval_minutes: int = Field(default=60, description="Estimated minutes to transfer from nearest surplus site")
+
 
 
 class ForecastResult(BaseModel):
@@ -57,6 +67,8 @@ class PurchaseOrder(BaseModel):
     # NEW (additive — does not break existing frontend field names)
     generated_by: Literal["llm", "fallback"] = "llm"
     created_at: date = Field(default_factory=date.today)
+    # Task 5: Idempotent approval guard — never exposed to frontend, internal only
+    feedback_applied: bool = Field(default=False, exclude=True)
 
 
 class AgentRunRequest(BaseModel):
