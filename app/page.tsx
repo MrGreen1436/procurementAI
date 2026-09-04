@@ -85,8 +85,8 @@ function KPICard({
 /* ─── Simulated supplier delay alert ─────────────────── */
 const DELAY_ALERT: Alert = {
   id: `demo-${Date.now()}`,
-  sku: "SKU-COP-006",
-  skuName: "Copper Wire - 12 AWG",
+  sku: "SKU_003",
+  skuName: "Product SKU_003",
   riskLevel: "high",
   daysUntilStockout: 3,
   currentStock: 2500,
@@ -104,7 +104,7 @@ export default function DashboardPage() {
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
 
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
-  const [selectedSku, setSelectedSku] = useState<string>("SKU-LITH-007");
+  const [selectedSku, setSelectedSku] = useState<string>("SKU_001");
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
   const [suppliers, setSuppliers] = useState<SupplierRiskItem[]>([]);
@@ -112,7 +112,13 @@ export default function DashboardPage() {
   useEffect(() => {
     fetchKPIs().then(setKpis);
     fetchAlerts().then(setAlerts);
-    fetchInventoryHistory().then(setHistory);
+    fetchInventoryHistory().then((data) => {
+      setHistory(data);
+      if (data && data.length > 0) {
+        const skus = Array.from(new Set(data.map((h) => h.sku)));
+        setSelectedSku((prev) => (skus.includes(prev) ? prev : skus[0]));
+      }
+    });
     fetchPOs().then(setPOs);
     fetchSupplierRisk().then(setSuppliers);
   }, []);
@@ -175,7 +181,7 @@ export default function DashboardPage() {
     if (!file) return;
     
     toast.info("Uploading Dataset", {
-      description: "Uploading file and retraining the ML model...",
+      description: "Parsing file and running forecasting inference on existing trained model...",
       duration: 5000,
     });
     

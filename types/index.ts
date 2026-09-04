@@ -79,7 +79,7 @@ export interface SupplierRiskItem {
   supplier_id: string;
   supplier_name: string;
   risk_score: number;
-  label: "red" | "yellow" | "green";
+  label: "red" | "yellow" | "green" | "insufficient_data";
   anomaly_rate: number;
   weekend_rate: number;
   avg_amount: number;

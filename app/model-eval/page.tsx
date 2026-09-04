@@ -262,7 +262,7 @@ export default function ModelEvalPage() {
                 <YAxis domain={[65, 82]} tick={{ fontSize: 10, fill: "#8B87A0" }} axisLine={false} tickLine={false} unit="%" />
                 <Tooltip
                   contentStyle={{ background: "#14151F", border: "1px solid #262838", borderRadius: 8, fontSize: 11, color: "#F5F1E8" }}
-                  formatter={(v: number) => [`${v}%`, "Accuracy"]}
+                  formatter={(v: any) => [`${v}%`, "Accuracy"]}
                 />
                 <Bar dataKey="accuracy" name="Accuracy" fill="#FFB627" radius={[4, 4, 0, 0]} />
               </BarChart>
@@ -282,7 +282,7 @@ export default function ModelEvalPage() {
                 <YAxis tick={{ fontSize: 10, fill: "#8B87A0" }} axisLine={false} tickLine={false} />
                 <Tooltip
                   contentStyle={{ background: "#14151F", border: "1px solid #262838", borderRadius: 8, fontSize: 11, color: "#F5F1E8" }}
-                  formatter={(v: number) => [`${v} units`, "MAE"]}
+                  formatter={(v: any) => [`${v} units`, "MAE"]}
                 />
                 <Bar dataKey="mae" name="MAE" fill="#7DD3C0" radius={[4, 4, 0, 0]} />
               </BarChart>

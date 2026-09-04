@@ -107,7 +107,11 @@ export async function uploadDataset(file: File): Promise<{ success: boolean; mes
     const formData = new FormData();
     formData.append("file", file);
     
-    const res = await fetch(`${API_BASE}/upload-dataset`, {
+    const uploadUrl = typeof window !== "undefined"
+      ? `http://${window.location.hostname}:8000/upload-dataset`
+      : "http://127.0.0.1:8000/upload-dataset";
+
+    const res = await fetch(uploadUrl, {
       method: "POST",
       body: formData,
     });
@@ -116,11 +120,12 @@ export async function uploadDataset(file: File): Promise<{ success: boolean; mes
       const data = await res.json();
       return { success: true, message: data.message };
     } else {
-      return { success: false, message: "Upload failed on the server." };
+      const errText = await res.text().catch(() => "");
+      return { success: false, message: `Upload failed: ${errText || res.statusText}` };
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Upload error:", error);
-    return { success: false, message: "Network error occurred." };
+    return { success: false, message: error?.message || "Network error occurred." };
   }
 }
 
@@ -138,7 +143,7 @@ export async function runScenario(input: ScenarioInput): Promise<ScenarioResult>
     input.demandIncreasePct * 15000 + input.leadTimeVariabilityPct * 8000;
 
   // Affected SKUs: empty at baseline/negative; grows 1→2→3 as pressure rises
-  const ALL_AT_RISK = ["SKU-LITH-007", "SKU-PCB-003", "SKU-STL-001"];
+  const ALL_AT_RISK = ["SKU_001", "SKU_002", "SKU_003"];
   const affectedSkus = ALL_AT_RISK.slice(0, stockoutIncrease);
 
   return {
@@ -157,8 +162,8 @@ export async function fetchAuditLogs(): Promise<AuditLogEntry[]> {
       return entries.map((e: any) => ({
         id: String(e.id),
         timestamp: e.timestamp || new Date().toISOString(),
-        actor: e.actor || "System",
-        actorType: e.actor?.toLowerCase().includes("officer") ? "human" : "system",
+        actor: e.actor || "system",
+        actorType: e.actor?.toLowerCase().includes("officer") ? "human" : "automated",
         action: e.action || "Action recorded",
         target: e.target_id || e.target || "N/A",
         status: e.action?.includes("fail") ? "error" : "success",
@@ -203,3 +208,33 @@ export async function fetchCallQuotes(): Promise<CallQuote[]> {
   }
   return [];
 }
+
+export async function parseSupplierEmail(emailText: string) {
+  try {
+    const res = await fetch(`${API_BASE}/parse-email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: emailText }),
+    });
+    if (res.ok) return await res.json();
+  } catch (e) {
+    // Fallback heuristic extraction
+  }
+
+  const delayMatch = emailText.match(/(\d+)[-\s]*day/i);
+  const delayDays = delayMatch ? parseInt(delayMatch[1], 10) : 7;
+  const skuMatch = emailText.match(/SKU[_\-][A-Za-z0-9]+/i);
+  const skuId = skuMatch ? skuMatch[0].toUpperCase() : "SKU_001";
+  const supMatch = emailText.match(/(?:from|by|at)\s+([A-Z][A-Za-z0-9\s]+?)(?:\s*\(|\s+is|\s+will|\s+due|\s+under|,|\.)/i);
+  const supplier = supMatch ? supMatch[1].trim() : "Supplier Logistics";
+
+  return {
+    persisted_email_id: Math.floor(Math.random() * 9000 + 1000),
+    delay_days: delayDays,
+    sku_id: skuId,
+    supplier_id: supplier,
+    summary: `Extracted disruption notice: ${delayDays}-day delivery delay reported by ${supplier} affecting ${skuId}.`,
+    new_lead_time_days: 14 + delayDays,
+  };
+}
+

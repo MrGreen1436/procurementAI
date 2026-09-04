@@ -1,0 +1,15 @@
+{
+  "name": "twilio-whatsapp",
+  "version": "1.0.0",
+  "description": "A standalone, self-contained Express server for sending WhatsApp messages via Twilio",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "twilio": "^5.3.1"
+  }
+}

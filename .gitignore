@@ -22,4 +22,5 @@ env/
 **/*.sqlite3
 *.exe
 **/*.exe
+*.tsbuildinfo
 

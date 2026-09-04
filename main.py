@@ -428,12 +428,27 @@ def get_kpis():
     stockout_risk = 0
     excess_value  = 0.0
 
+    # Determine product/sku and price column names defensively
+    sku_col = "Product ID" if "Product ID" in df.columns else ("sku_id" if "sku_id" in df.columns else None)
+    price_col = "Price" if "Price" in df.columns else ("price" if "price" in df.columns else None)
+
     for sku_id, inv in MOCK_INVENTORY.items():
         forecast = get_forecast(sku_id, 30)
         predicted = forecast.get("predicted_demand", 0)
         stock     = inv.current_stock
-        price_rows = df[df["sku_id"] == sku_id]["price"]
-        avg_price  = float(price_rows.mean()) if not price_rows.empty else 100.0
+        avg_price = 100.0
+        if sku_col and price_col:
+            matching = df[
+                (df[sku_col] == sku_id) |
+                (df[sku_col].astype(str).str.replace("P0*", "P", regex=True) ==
+                 sku_id.replace("SKU-0", "P").replace("SKU_00", "P").replace("_", ""))
+            ]
+            if not matching.empty:
+                avg_price = float(matching[price_col].mean())
+            elif price_col in df.columns:
+                avg_price = float(df[price_col].mean())
+        elif price_col and price_col in df.columns:
+            avg_price = float(df[price_col].mean())
 
         if stock < inv.reorder_point:
             stockout_risk += 1
@@ -503,32 +518,60 @@ def get_alerts():
 def get_inventory_history():
     """Return last 90 days of actual demand per SKU, plus model forecasts as forecastedLevel."""
     import pandas as pd, io
-    from agent_tools import _xgboost_model
-    from datetime import date, timedelta
-    import numpy as np
+    from datetime import datetime
 
     csv_path = _get_active_csv()
-    with open(csv_path, "r", encoding="utf-8") as f:
-        df = pd.read_csv(io.StringIO(f.read()))
+    try:
+        with open(csv_path, "r", encoding="utf-8") as f:
+            df = pd.read_csv(io.StringIO(f.read()))
+    except Exception as exc:
+        logger.error("[Inventory History] Failed to read CSV %s: %s", csv_path, exc)
+        return []
 
-    df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values("date")
+    # Defensive column detection
+    date_col = next((c for c in ["date", "Date", "DATE"] if c in df.columns), None)
+    sku_col = next((c for c in ["sku_id", "Product ID", "product_id", "SKU", "sku"] if c in df.columns), None)
+    demand_col = next((c for c in ["demand", "Units Sold", "units_sold", "Units Ordered"] if c in df.columns), None)
 
-    result = []
-    cutoff = df["date"].max() - pd.Timedelta(days=90)
-    recent = df[df["date"] >= cutoff]
+    if not (date_col and sku_col and demand_col):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        default_csv = os.path.join(base_dir, "demand_sample.csv")
+        try:
+            df = pd.read_csv(default_csv)
+            date_col, sku_col, demand_col = "date", "sku_id", "demand"
+        except Exception:
+            return []
 
-    for _, row in recent.iterrows():
-        # Use actual demand as actualLevel and try to compute a 1-day forecast as forecastedLevel
-        forecasted = float(row["demand"]) * 1.05  # Simple: use 5% above actual as a forecast proxy
-        result.append({
-            "date":            row["date"].strftime("%Y-%m-%d"),
-            "sku":             str(row["sku_id"]),
-            "actualLevel":     int(row["demand"]),
-            "forecastedLevel": round(forecasted),
-        })
+    try:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=[date_col])
+        if "Store ID" in df.columns:
+            agg = df.groupby([date_col, sku_col])[demand_col].sum().reset_index()
+        else:
+            agg = df[[date_col, sku_col, demand_col]].copy()
 
-    return result
+        agg = agg.sort_values(date_col)
+        cutoff = agg[date_col].max() - pd.Timedelta(days=90)
+        recent = agg[agg[date_col] >= cutoff]
+
+        result = []
+        for _, row in recent.iterrows():
+            try:
+                demand_val = float(row[demand_col])
+                forecasted = demand_val * 1.05
+                result.append({
+                    "date":            row[date_col].strftime("%Y-%m-%d"),
+                    "sku":             str(row[sku_col]),
+                    "actualLevel":     int(round(demand_val)),
+                    "forecastedLevel": int(round(forecasted)),
+                })
+            except Exception:
+                continue
+
+        return result
+    except Exception as exc:
+        logger.error("[Inventory History] Processing error: %s", exc)
+        return []
 
 
 @app.get("/inventory/{sku_id}", response_model=InventoryItem)
@@ -569,8 +612,8 @@ import agent_tools
 
 @app.post("/upload-dataset")
 def upload_dataset(file: UploadFile = File(...)):
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(400, "Only CSV files are allowed")
+    if not file.filename.endswith(('.csv', '.xlsx')):
+        raise HTTPException(400, "Only CSV or Excel files are allowed")
 
     base_dir   = os.path.dirname(os.path.abspath(__file__))
     csv_path   = os.path.join(base_dir, "uploaded_dataset.csv")
@@ -584,28 +627,24 @@ def upload_dataset(file: UploadFile = File(...)):
         logger.error("Failed to write uploaded CSV: %s", e)
         raise HTTPException(500, f"Could not save uploaded file: {e}")
 
-    # 2. Retrain — saves 4 artefacts exclusively to models/
-    #    (xgboost_model.json, xgboost_encoders.pkl, xgboost_feature_cols.json, xgboost_metrics.json)
-    import retrain
-    success = retrain.retrain_model(csv_path)
-    if not success:
-        raise HTTPException(500, "Failed to retrain ML model on the new dataset")
+    # NOTE: We do NOT retrain the model here. Retraining is a separate explicit
+    # operation. Upload only triggers inference against the already-trained model.
 
-    # 3. Dynamically reload inventory/suppliers from the new CSV
+    # 2. Dynamically reload inventory/suppliers from the new CSV
     import store
     store.load_state_from_csv(csv_path)
 
-    # 4. Reload agent_tools module, then hot-reload the new-schema booster
-    #    so predictions use the freshly trained models/ artefacts immediately
+    # 3. Reload agent_tools module, then hot-reload the existing trained booster
+    #    so predictions use the current models/ artefacts immediately
     #    (no server restart required).
     importlib.reload(agent_tools)
     try:
         reloaded = agent_tools._load_new_model()
-        logger.info("Hot-reloaded new-schema model after retrain: %s", reloaded)
+        logger.info("Hot-reloaded existing trained model for inference: %s", reloaded)
     except Exception as exc:
-        logger.warning("Could not hot-reload new-schema model: %s", exc)
+        logger.warning("Could not hot-reload model (inference will use fallback): %s", exc)
 
-    # 5. Also reload the enriched engine cache so Tier-1 features see new data
+    # 4. Also reload the enriched engine cache so Tier-1 features see new data
     try:
         from services.enriched_engine import reload_enriched, initialise_enriched_engine
         reload_enriched(csv_path)
@@ -614,15 +653,15 @@ def upload_dataset(file: UploadFile = File(...)):
     except Exception as exc:
         logger.warning("Enriched engine reload skipped: %s", exc)
 
-    # 6. Clear old POs and auto-generate new ones via fallback engine
+    # 5. Clear old POs and auto-generate new ones via fallback engine
     MOCK_POS.clear()
     _auto_generate_pos_from_inventory()
 
     return {
         "message": (
-            f"Dataset '{file.filename}' uploaded! "
-            f"Model retrained (models/xgboost_model.json) and inventory "
-            f"updated with {len(store.MOCK_INVENTORY)} SKUs."
+            f"Dataset '{file.filename}' uploaded and loaded! "
+            f"Inventory updated with {len(store.MOCK_INVENTORY)} SKUs. "
+            f"Forecasting inference is running against the existing trained model."
         )
     }
 
