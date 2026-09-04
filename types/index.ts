@@ -51,8 +51,8 @@ export interface QueryResponse {
 }
 
 export interface ScenarioInput {
-  lead_time_variability_pct: number;
-  demand_increase_pct: number;
+  leadTimeVariabilityPct: number;
+  demandIncreasePct: number;
   disrupted_supplier_id?: string | null;
   extra_delay_days?: number | null;
 }

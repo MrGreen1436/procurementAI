@@ -125,7 +125,12 @@ export async function runScenario(input: ScenarioInput): Promise<ScenarioResult>
     const res = await fetch("http://127.0.0.1:8000/simulate", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        lead_time_variability_pct: input.leadTimeVariabilityPct,
+        demand_increase_pct: input.demandIncreasePct,
+        disrupted_supplier_id: input.disrupted_supplier_id,
+        extra_delay_days: input.extra_delay_days,
+      }),
     });
     if (res.ok) return await res.json();
   } catch (e) {
@@ -135,9 +140,9 @@ export async function runScenario(input: ScenarioInput): Promise<ScenarioResult>
   // Fallback mock
   const stockoutIncrease = Math.max(
     0,
-    Math.floor((input.demand_increase_pct / 10) + (input.lead_time_variability_pct / 10))
+    Math.floor((input.demandIncreasePct / 10) + (input.leadTimeVariabilityPct / 10))
   );
-  const costImpact = input.demand_increase_pct * 15000 + input.lead_time_variability_pct * 8000;
+  const costImpact = input.demandIncreasePct * 15000 + input.leadTimeVariabilityPct * 8000;
   const ALL_AT_RISK = ["SKU_001", "SKU_003", "SKU_005"];
   const affectedSkus = ALL_AT_RISK.slice(0, stockoutIncrease);
   return {
