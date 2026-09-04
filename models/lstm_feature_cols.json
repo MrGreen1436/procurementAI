@@ -1,0 +1,29 @@
+{
+  "feature_cols": [
+    "Inventory Level",
+    "Units Ordered",
+    "Price",
+    "Discount",
+    "Holiday/Promotion",
+    "Competitor Pricing",
+    "lead_time_days",
+    "reorder_level",
+    "hours_since_update",
+    "mismatch_count",
+    "last_known_price",
+    "day_of_week",
+    "day_of_month",
+    "month",
+    "week_of_year",
+    "is_weekend",
+    "Store ID_enc",
+    "Product ID_enc",
+    "Category_enc",
+    "Region_enc",
+    "Weather Condition_enc",
+    "Seasonality_enc",
+    "supplier_id_enc",
+    "target_scaled_lag"
+  ],
+  "lookback": 14
+}

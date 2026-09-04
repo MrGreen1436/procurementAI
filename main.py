@@ -64,6 +64,9 @@ from services.enriched_engine import (
     load_anomaly_records,
 )
 
+# Audit Trail (Feature 8) — SQLAlchemy/SQLite, additive only
+from database import init_db, log_audit_event
+
 # ---------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------
@@ -118,7 +121,12 @@ print("MAIN MODULE LOADED")
 # Add CORS middleware to allow the Next.js frontend to talk to this backend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://10.152.1.35:3000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -128,6 +136,13 @@ app.add_middleware(
 @app.on_event("startup")
 async def _startup():
     """Auto-generate POs and initialise Tier-1 enriched engine on startup."""
+    # Audit Trail: create audit_log table (and any other DB tables) if absent
+    try:
+        init_db()
+        logger.info("[Audit] Database tables ready (audit_log, purchase_orders, risk_alerts)")
+    except Exception as exc:
+        logger.warning("[Audit] DB init skipped: %s", exc)
+
     try:
         _auto_generate_pos_from_inventory()
     except Exception as exc:
@@ -348,6 +363,18 @@ def _fallback_create_po(alert: RiskAlert, reasoning_prefix: str = "[FALLBACK]") 
         created_at=date.today(),
     )
     MOCK_POS[po_id] = po
+    import json as _json
+    log_audit_event(
+        action="po.fallback_created",
+        target_id=po_id,
+        actor="system",
+        details=_json.dumps({
+            "sku_id": alert.sku_id,
+            "supplier_id": best.supplier_id,
+            "total_cost": total_cost,
+            "status": status,
+        }),
+    )
     logger.info("Fallback PO: %s | %s | $%.2f | %s", po_id, alert.sku_id, total_cost, status)
     return po
 
@@ -359,6 +386,10 @@ def _fallback_create_po(alert: RiskAlert, reasoning_prefix: str = "[FALLBACK]") 
 # ---------------------------------------------------------------
 # Dynamic KPI/Alerts/History endpoints — computed from CSV + model
 # ---------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    init_db()
 
 def _get_active_csv() -> str:
     """Return the path to the active dataset (uploaded or default)."""
@@ -523,12 +554,10 @@ import agent_tools
 def upload_dataset(file: UploadFile = File(...)):
     if not file.filename.endswith('.csv'):
         raise HTTPException(400, "Only CSV files are allowed")
-    
+
     base_dir   = os.path.dirname(os.path.abspath(__file__))
-    # Save to a separate file so we never conflict with the file currently open by pandas
     csv_path   = os.path.join(base_dir, "uploaded_dataset.csv")
-    model_path = os.path.join(base_dir, "model.pkl")
-    
+
     # 1. Write the uploaded file
     try:
         contents = file.file.read()
@@ -537,25 +566,48 @@ def upload_dataset(file: UploadFile = File(...)):
     except Exception as e:
         logger.error("Failed to write uploaded CSV: %s", e)
         raise HTTPException(500, f"Could not save uploaded file: {e}")
-        
-    # 2. Retrain the ML model on the new data
+
+    # 2. Retrain — saves 4 artefacts exclusively to models/
+    #    (xgboost_model.json, xgboost_encoders.pkl, xgboost_feature_cols.json, xgboost_metrics.json)
     import retrain
-    success = retrain.retrain_model(csv_path, model_path)
+    success = retrain.retrain_model(csv_path)
     if not success:
         raise HTTPException(500, "Failed to retrain ML model on the new dataset")
-        
+
     # 3. Dynamically reload inventory/suppliers from the new CSV
     import store
     store.load_state_from_csv(csv_path)
-    
-    # 4. Reload agent_tools so the XGBoost model is refreshed in memory
-    importlib.reload(agent_tools)
 
-    # 5. Clear old POs and auto-generate new ones via fallback engine
+    # 4. Reload agent_tools module, then hot-reload the new-schema booster
+    #    so predictions use the freshly trained models/ artefacts immediately
+    #    (no server restart required).
+    importlib.reload(agent_tools)
+    try:
+        reloaded = agent_tools._load_new_model()
+        logger.info("Hot-reloaded new-schema model after retrain: %s", reloaded)
+    except Exception as exc:
+        logger.warning("Could not hot-reload new-schema model: %s", exc)
+
+    # 5. Also reload the enriched engine cache so Tier-1 features see new data
+    try:
+        from services.enriched_engine import reload_enriched, initialise_enriched_engine
+        reload_enriched(csv_path)
+        initialise_enriched_engine(csv_path)
+        logger.info("Enriched engine reloaded from uploaded CSV.")
+    except Exception as exc:
+        logger.warning("Enriched engine reload skipped: %s", exc)
+
+    # 6. Clear old POs and auto-generate new ones via fallback engine
     MOCK_POS.clear()
     _auto_generate_pos_from_inventory()
 
-    return {"message": f"Dataset '{file.filename}' uploaded! Model retrained and inventory updated with {len(store.MOCK_INVENTORY)} SKUs."}
+    return {
+        "message": (
+            f"Dataset '{file.filename}' uploaded! "
+            f"Model retrained (models/xgboost_model.json) and inventory "
+            f"updated with {len(store.MOCK_INVENTORY)} SKUs."
+        )
+    }
 
 
 @app.get("/risk/alerts", response_model=list[RiskAlert])
@@ -756,6 +808,13 @@ def run_agent(req: AgentRunRequest = AgentRunRequest()):
                 ),
             }
             transfer_recommendations.append(rec)
+            # Audit: Decision Engine triggered transfer
+            log_audit_event(
+                action="transfer.recommended",
+                target_id=alert.sku_id,
+                actor="Decision Engine",
+                details=f'{{"confidence": {confidence_score}, "note": "{rec["note"]}"}}'
+            )
             logger.info("SKU %s → Use Internal Stock (transfer recommended, no PO created)", alert.sku_id)
             continue  # Skip PO creation entirely
 
@@ -844,6 +903,18 @@ def run_agent(req: AgentRunRequest = AgentRunRequest()):
                 new_po.status = "auto_approved" if new_po.total_cost < 5_000 else "pending_approval"
                 if not req.dry_run:
                     created_pos.append(new_po)
+                # Audit: LLM created PO
+                import json as _json
+                log_audit_event(
+                    action="po.llm_created",
+                    target_id=new_po.po_id,
+                    actor="Gemini-LLM",
+                    details=_json.dumps({
+                        "sku_id": alert.sku_id,
+                        "total_cost": new_po.total_cost,
+                        "status": new_po.status
+                    })
+                )
                 logger.info("LLM PO for %s: %s | $%.2f | %s", alert.sku_id, new_po.po_id, new_po.total_cost, new_po.status)
             else:
                 logger.warning("LLM did not call create_purchase_order for %s — fallback", alert.sku_id)
@@ -918,6 +989,19 @@ def _auto_generate_pos_from_inventory():
             status=status,
             generated_by="fallback",
             created_at=date.today(),
+        )
+        import json as _json
+        log_audit_event(
+            action="po.auto_created",
+            target_id=po_id,
+            actor="system",
+            details=_json.dumps({
+                "sku_id": sku_id,
+                "supplier_id": best_supplier.supplier_id,
+                "quantity": int(order_qty),
+                "total_cost": total_cost,
+                "status": status,
+            }),
         )
     logger.info("Auto-generated %d POs from inventory state", len(MOCK_POS))
 
@@ -1006,6 +1090,13 @@ def approve_po(po_id: str):
         )
 
     logger.info("PO approved: %s", po_id)
+    # Audit: human approved a PO
+    log_audit_event(
+        action="po.approved",
+        target_id=po_id,
+        actor="Procurement Officer",
+        details=f"{{\"supplier_id\": \"{po.supplier_id}\", \"total_cost\": {po.total_cost}, \"status\": \"{po.status}\"}}",
+    )
     return po
 
 
@@ -1032,6 +1123,13 @@ def reject_po(po_id: str):
         )
 
     logger.info("PO rejected: %s", po_id)
+    # Audit: human rejected a PO
+    log_audit_event(
+        action="po.rejected",
+        target_id=po_id,
+        actor="Procurement Officer",
+        details=f"{{\"supplier_id\": \"{po.supplier_id}\", \"total_cost\": {po.total_cost}}}",
+    )
     return po
 
 
@@ -1158,7 +1256,11 @@ def approve_anomaly(record_key: str):
     """
     Human approval of a flagged anomaly row (Feature 5).
     Routes through apply_feedback_safely — safe to call multiple times.
-    On approval: applies a small trust score penalty for the anomaly's supplier.
+
+    On approval:
+      1. Applies a small trust score penalty for the anomaly's supplier.
+      2. Fires a Slack alert (Multi-Channel Alerts — Feature 7).
+         Graceful no-op if SLACK_WEBHOOK_URL is not configured.
     """
     record = ANOMALY_RECORDS.get(record_key)
     if not record:
@@ -1175,7 +1277,40 @@ def approve_anomaly(record_key: str):
         rec["human_decision"] = "approved"
 
     result = apply_feedback_safely(record, _apply_approval)
-    return {"record_key": record_key, **result, "record": record}
+
+    # ── Feature 7: Multi-Channel Alert (Slack) ────────────────────────────
+    # Only fires when this is a genuine new approval (not a duplicate call).
+    # send_slack_alert() is a guaranteed no-op if SLACK_WEBHOOK_URL is absent.
+    slack_result = {"status": "skipped", "reason": "feedback already applied"}
+    if result.get("status") == "applied":
+        from services.alerts import send_slack_alert
+        slack_result = send_slack_alert(record)
+        logger.info(
+            "[F7] Slack alert for %s → %s",
+            record_key, slack_result.get("status"),
+        )
+        # Audit: human approved a flagged anomaly
+        import json as _json
+        log_audit_event(
+            action="anomaly.approved",
+            target_id=record_key,
+            actor="Procurement Officer",
+            details=_json.dumps({
+                "store_id":      record.get("store_id"),
+                "product_id":    record.get("product_id"),
+                "supplier_id":   record.get("supplier_id"),
+                "anomaly_reason":record.get("anomaly_reason"),
+                "slack_status":  slack_result.get("status"),
+            }),
+        )
+
+    return {
+        "record_key":   record_key,
+        **result,
+        "slack_alert":  slack_result,
+        "record":       record,
+    }
+
 
 
 @app.post("/anomaly-records/{record_key}/reject")
@@ -1199,7 +1334,135 @@ def reject_anomaly(record_key: str):
         rec["human_decision"] = "rejected_false_positive"
 
     result = apply_feedback_safely(record, _apply_rejection)
+    # Audit: human rejected (false-positive) a flagged anomaly
+    if result.get("status") == "applied":
+        import json as _json
+        log_audit_event(
+            action="anomaly.rejected",
+            target_id=record_key,
+            actor="Procurement Officer",
+            details=_json.dumps({
+                "store_id":      record.get("store_id"),
+                "product_id":    record.get("product_id"),
+                "supplier_id":   record.get("supplier_id"),
+                "anomaly_reason":record.get("anomaly_reason"),
+                "decision":      "false_positive",
+            }),
+        )
     return {"record_key": record_key, **result, "record": record}
+
+# ---------------------------------------------------------------
+# Feature 8 — Audit Trail
+# GET /audit-log
+# ---------------------------------------------------------------
+
+@app.get("/audit-log")
+def get_audit_log(
+    action: str = None,
+    target_id: str = None,
+    limit: int = 200,
+):
+    """
+    Return the full audit trail from the SQLite audit_log table,
+    most recent first.
+
+    Query params
+    ------------
+    action    : Filter by exact action code, e.g. "anomaly.approved",
+                "po.rejected", "po.auto_created".
+    target_id : Filter by target record ID (anomaly key, PO ID, etc.).
+    limit     : Max rows to return (default 200).
+
+    Action codes emitted by this pipeline
+    -------------------------------------
+    anomaly.approved      — Human confirmed an anomaly via /anomaly-records/{key}/approve
+    anomaly.rejected      — Human dismissed a false-positive via /anomaly-records/{key}/reject
+    po.approved           — Human approved a PO via /agent/approve/{po_id}
+    po.rejected           — Human rejected a PO via /agent/reject/{po_id}
+    po.auto_created       — System auto-generated a PO at startup
+    po.fallback_created   — System created a fallback PO during agent run
+    po.llm_created        — Gemini LLM created a PO during agent run
+    transfer.recommended  — Decision Engine recommended inter-store transfer
+    """
+    from database import SessionLocal, AuditLog
+    from sqlalchemy import desc
+    db = SessionLocal()
+    try:
+        query = db.query(AuditLog)
+        if action:
+            query = query.filter(AuditLog.action == action)
+        if target_id:
+            query = query.filter(AuditLog.target_id == target_id)
+        rows = query.order_by(desc(AuditLog.timestamp)).limit(limit).all()
+        return {
+            "count": len(rows),
+            "filters": {"action": action, "target_id": target_id},
+            "entries": [
+                {
+                    "id":        r.id,
+                    "timestamp": r.timestamp.isoformat() + "Z",
+                    "action":    r.action,
+                    "actor":     r.actor,
+                    "target_id": r.target_id,
+                    "details":   r.details,
+                }
+                for r in rows
+            ],
+        }
+    except Exception as exc:
+        logger.error("[Audit] /audit-log query failed: %s", exc)
+        raise HTTPException(500, f"Audit log query failed: {exc}")
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------
+# Feature 6 — Predictive Site Risk Scoring
+# GET /supplier-risk
+# ---------------------------------------------------------------
+
+@app.get("/supplier-risk")
+def get_supplier_risk(trailing_days: int = None):
+    """
+    Compute a Predictive Site Risk Score for every supplier in the dataset.
+
+    Score (0-1) combines three signals:
+      • anomaly_rate   (weight 0.6) — fraction of rows flagged is_anomaly==True
+      • weekend_rate   (weight 0.2) — fraction of orders placed Sat/Sun
+      • amount_factor  (weight 0.2) — avg(Price × Units Ordered) / 15 000 ceiling
+
+    Traffic-light labels:
+      green  → risk_score < 0.30
+      yellow → 0.30 ≤ risk_score < 0.60
+      red    → risk_score ≥ 0.60
+
+    Query params
+    ------------
+    trailing_days : int (optional) — restrict scoring to most recent N days.
+                    Omit to use all history.
+
+    Returns list sorted by risk_score descending (riskiest supplier first).
+    """
+    from services.enriched_engine import compute_all_supplier_risks
+    try:
+        scores = compute_all_supplier_risks(trailing_days=trailing_days)
+        summary = {
+            "green":  sum(1 for s in scores if s.get("label") == "green"),
+            "yellow": sum(1 for s in scores if s.get("label") == "yellow"),
+            "red":    sum(1 for s in scores if s.get("label") == "red"),
+        }
+        logger.info(
+            "[F6] /supplier-risk — green=%d yellow=%d red=%d (trailing_days=%s)",
+            summary["green"], summary["yellow"], summary["red"], trailing_days,
+        )
+        return {
+            "trailing_days": trailing_days,
+            "summary":       summary,
+            "suppliers":     scores,
+        }
+    except Exception as exc:
+        logger.error("[F6] /supplier-risk failed: %s", exc, exc_info=True)
+        raise HTTPException(500, f"Supplier risk scoring failed: {exc}")
 
 
 # ---------------------------------------------------------------

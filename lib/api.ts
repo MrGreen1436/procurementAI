@@ -4,9 +4,13 @@ import { MOCK_ALERTS, MOCK_INVENTORY_HISTORY, MOCK_KPIS, MOCK_POS, MOCK_QA_PAIRS
 // Sleep utility to simulate network latency
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+const API_BASE = typeof window !== "undefined" && window.location.hostname
+  ? `http://${window.location.hostname}:8000`
+  : "http://127.0.0.1:8000";
+
 export async function fetchKPIs(): Promise<KPISummary> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/kpis");
+    const res = await fetch(`${API_BASE}/kpis`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchKPIs failed, falling back to mock", e);
@@ -17,7 +21,7 @@ export async function fetchKPIs(): Promise<KPISummary> {
 
 export async function fetchAlerts(): Promise<Alert[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/alerts");
+    const res = await fetch(`${API_BASE}/alerts`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchAlerts failed, falling back to mock", e);
@@ -28,7 +32,7 @@ export async function fetchAlerts(): Promise<Alert[]> {
 
 export async function fetchInventoryHistory(): Promise<InventoryPoint[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/inventory-history");
+    const res = await fetch(`${API_BASE}/inventory-history`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchInventoryHistory failed, falling back to mock", e);
@@ -39,7 +43,7 @@ export async function fetchInventoryHistory(): Promise<InventoryPoint[]> {
 
 export async function fetchPOs(): Promise<PurchaseOrder[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/agent/pos-frontend");
+    const res = await fetch(`${API_BASE}/agent/pos-frontend`);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("fetchPOs failed, falling back to mock", e);
@@ -51,14 +55,14 @@ export async function fetchPOs(): Promise<PurchaseOrder[]> {
 export async function updatePOStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<void> {
   if (status === "approved") {
     try {
-      await fetch(`http://127.0.0.1:8000/agent/approve/${id}`, { method: "POST" });
+      await fetch(`${API_BASE}/agent/approve/${id}`, { method: "POST" });
       return;
     } catch (e) {
       console.error(e);
     }
   } else if (status === "rejected") {
     try {
-      await fetch(`http://127.0.0.1:8000/agent/reject/${id}`, { method: "POST" });
+      await fetch(`${API_BASE}/agent/reject/${id}`, { method: "POST" });
       return;
     } catch (e) {
       console.error(e);
@@ -75,7 +79,7 @@ export async function updatePOStatus(id: string, status: "pending" | "approved" 
 
 export async function queryAgent(question: string): Promise<QueryResponse> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/query", {
+    const res = await fetch(`${API_BASE}/query`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question })
@@ -103,7 +107,7 @@ export async function uploadDataset(file: File): Promise<{ success: boolean; mes
     const formData = new FormData();
     formData.append("file", file);
     
-    const res = await fetch("http://127.0.0.1:8000/upload-dataset", {
+    const res = await fetch(`${API_BASE}/upload-dataset`, {
       method: "POST",
       body: formData,
     });

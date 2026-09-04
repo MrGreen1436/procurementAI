@@ -574,3 +574,174 @@ def initialise_enriched_engine(csv_path: str = _ENRICHED_CSV) -> None:
         logger.info("[EnrichedEngine] All features initialised successfully.")
     except FileNotFoundError as e:
         logger.warning("[EnrichedEngine] Could not initialise: %s", e)
+
+
+# ===========================================================================
+# FEATURE 6 -- Predictive Site Risk Scoring (per supplier_id)
+# ===========================================================================
+#
+# "Site" in this codebase maps to supplier_id — anomalies (price deviations,
+# excess orders) are supplier-sourced events, and supplier_id is the entity
+# that already powers Feature 2 trust scores.  Grouping here by supplier_id
+# makes the risk score a natural complement to the trust score.
+#
+# Three signals combined into one 0-1 score:
+#   anomaly_rate   (weight 0.6) — fraction of rows flagged is_anomaly==True
+#   weekend_rate   (weight 0.2) — fraction placed on Sat/Sun (day-of-week 5/6)
+#   amount_factor  (weight 0.2) — avg(Price × Units Ordered) / AMOUNT_CEILING
+#
+# Amount ceiling calibration:
+#   Actual data: mean order amount ≈ 6 071, 95th pct ≈ 14 629, max ≈ 19 978.
+#   Reference code used 50 000 — that would compress every supplier to ≈0.12,
+#   making the factor meaningless.  We use 15 000 (≈ 95th pct) so high-value
+#   suppliers actually register on the scale.
+#
+# Traffic-light thresholds (configurable at call time):
+#   green  : risk_score < 0.30
+#   yellow : 0.30 ≤ risk_score < 0.60
+#   red    : risk_score ≥ 0.60
+#
+# Minimum sample guard: suppliers with < 10 rows return risk_score=None.
+# ===========================================================================
+
+_AMOUNT_CEILING = 15_000.0   # ≈ 95th percentile of (Price × Units Ordered)
+_MIN_ROWS       = 10         # minimum rows before we trust the score
+
+
+def _traffic_light(score: float) -> str:
+    if score < 0.30:
+        return "green"
+    if score < 0.60:
+        return "yellow"
+    return "red"
+
+
+def predict_supplier_risk(rows_for_supplier: pd.DataFrame) -> dict:
+    """
+    Compute the Predictive Site Risk Score for a single supplier's rows.
+
+    Parameters
+    ----------
+    rows_for_supplier : Subset of the enriched DataFrame for one supplier_id.
+                        Must include: is_anomaly (bool), Date (datetime),
+                        Price (float), Units Ordered (float/int).
+
+    Returns
+    -------
+    {
+        "risk_score":   float (0-1, rounded to 3 dp) or None,
+        "label":        "green" | "yellow" | "red" | "insufficient_data",
+        "anomaly_rate": float,
+        "weekend_rate": float,
+        "avg_amount":   float,
+        "n_rows":       int,
+        "note":         str (only present when data insufficient),
+    }
+    """
+    n = len(rows_for_supplier)
+    if n < _MIN_ROWS:
+        return {
+            "risk_score":   None,
+            "label":        "insufficient_data",
+            "n_rows":       n,
+            "note":         f"Need at least {_MIN_ROWS} rows, got {n}",
+        }
+
+    # Signal 1 — anomaly rate: is_anomaly is a native bool column
+    anomaly_rate = float(rows_for_supplier["is_anomaly"].mean())
+
+    # Signal 2 — weekend rate: derived from Date (dayofweek 5=Sat, 6=Sun)
+    weekend_mask = rows_for_supplier["Date"].dt.dayofweek >= 5
+    weekend_rate = float(weekend_mask.mean())
+
+    # Signal 3 — order amount factor: Price × Units Ordered, capped at ceiling
+    order_amounts = rows_for_supplier["Price"] * rows_for_supplier["Units Ordered"]
+    avg_amount    = float(order_amounts.mean())
+    amount_factor = min(avg_amount / _AMOUNT_CEILING, 1.0)
+
+    # Weighted composite
+    risk_score = (
+        anomaly_rate  * 0.6
+        + weekend_rate  * 0.2
+        + amount_factor * 0.2
+    )
+
+    return {
+        "risk_score":   round(risk_score, 3),
+        "label":        _traffic_light(risk_score),
+        "anomaly_rate": round(anomaly_rate, 4),
+        "weekend_rate": round(weekend_rate, 4),
+        "avg_amount":   round(avg_amount, 2),
+        "n_rows":       n,
+    }
+
+
+def compute_all_supplier_risks(
+    csv_path: str = _ENRICHED_CSV,
+    trailing_days: Optional[int] = None,
+    green_threshold:  float = 0.30,
+    yellow_threshold: float = 0.60,
+) -> list[dict]:
+    """
+    Run predict_supplier_risk for every supplier_id in the enriched dataset.
+
+    Parameters
+    ----------
+    csv_path        : Path to enriched CSV (uses cache if already loaded).
+    trailing_days   : If set, only use the most recent N days of data.
+                      If None, uses all history.
+    green_threshold : Upper bound for green label (default 0.30).
+    yellow_threshold: Upper bound for yellow label (default 0.60).
+
+    Returns
+    -------
+    List of dicts sorted by risk_score descending (highest risk first).
+    Each dict includes supplier_id, supplier_name (if available), and all
+    fields from predict_supplier_risk().
+    """
+    df = _load_enriched(csv_path)
+
+    if trailing_days is not None:
+        cutoff = df["Date"].max() - pd.Timedelta(days=trailing_days)
+        df = df[df["Date"] >= cutoff].copy()
+
+    # Lookup supplier_name per supplier_id (from any row)
+    name_lookup: dict[str, str] = (
+        df.groupby("supplier_id")["supplier_name"]
+        .first()
+        .to_dict()
+    )
+
+    results = []
+    for supplier_id, group in df.groupby("supplier_id"):
+        score_dict = predict_supplier_risk(group)
+
+        # Override thresholds if caller customised them
+        if score_dict["risk_score"] is not None:
+            s = score_dict["risk_score"]
+            if s < green_threshold:
+                score_dict["label"] = "green"
+            elif s < yellow_threshold:
+                score_dict["label"] = "yellow"
+            else:
+                score_dict["label"] = "red"
+
+        results.append({
+            "supplier_id":   supplier_id,
+            "supplier_name": name_lookup.get(supplier_id, ""),
+            **score_dict,
+        })
+
+    # Sort: None scores last, then descending by risk_score
+    results.sort(
+        key=lambda r: (r["risk_score"] is None, -(r["risk_score"] or 0))
+    )
+
+    logger.info(
+        "[F6] Supplier risk scores computed for %d suppliers "
+        "(trailing_days=%s).",
+        len(results),
+        trailing_days,
+    )
+    return results
+
