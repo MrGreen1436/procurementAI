@@ -87,3 +87,37 @@ export interface EmailParseResult {
   created_alert_id?: string | null;
   persisted_email_id?: number | null;
 }
+
+export interface CategorySummary {
+  category: string;
+  skuCount: number;
+  atRiskCount: number;
+  totalValue: number;
+}
+
+export interface InventoryRow {
+  id?: number;
+  date: string;
+  store_id: string;
+  product_id: string;
+  category: string | null;
+  region: string | null;
+  inventory_level: number;
+  reorder_level: number | null;
+  price: number | null;
+  supplier_name: string | null;
+  discount: number | null;
+  competitor_pricing: number | null;
+  seasonality: string | null;
+  weather_condition: string | null;
+  holiday_promotion: boolean | null;
+  is_anomaly: boolean;
+  anomaly_reason: string | null;
+}
+
+export interface InventoryDatasetStatus {
+  has_dataset: boolean;
+  filename?: string | null;
+  row_count?: number;
+}
+

@@ -1,4 +1,4 @@
-﻿"""
+"""
 services/supplier_outreach.py ΓÇö Corrected supplier outreach module.
 
 Wiring order (matches main.py run_agent() flow):
@@ -93,7 +93,7 @@ def _do_simulated_call(sku_id: str, supplier: dict) -> dict:
     }
 
     print(
-        f"[Supplier Outreach] Call to '{supplier['name']}' for SKU {sku_id} ΓåÆ "
+        f"[Supplier Outreach] Call to '{supplier['name']}' for SKU {sku_id} -> "
         f"price=${price} | lead={lead_time_days}d | avail={availability}"
     )
     return result

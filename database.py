@@ -1,10 +1,11 @@
-﻿"""
+"""
 database.py ΓÇö Production-ready SQLAlchemy persistence layer for ProcurementAI.
 Default: SQLite file (./procurement.db) for zero setup.
 Set DATABASE_URL env var to switch to PostgreSQL in production / Docker.
 """
 
 import os
+import uuid
 import json
 import logging
 from datetime import date, datetime
@@ -83,6 +84,25 @@ class ScenarioRunDB(Base):
     affected_skus              = Column(JSON, nullable=False)
     total_shortage_units       = Column(Float, default=0.0)
     created_at                 = Column(DateTime, default=datetime.utcnow)
+
+
+class SupplierCallDB(Base):
+    __tablename__ = "supplier_calls"
+
+    id            = Column(String, primary_key=True, index=True)
+    call_sid      = Column(String, nullable=True, index=True)
+    sku_id        = Column(String, nullable=False)
+    supplier_name = Column(String, nullable=False)
+    supplier_id   = Column(String, nullable=True)
+    reason        = Column(Text, nullable=True)
+    status        = Column(String, nullable=False)
+    source        = Column(String, nullable=False)
+    price         = Column(Float, nullable=True)
+    transcription = Column(Text, nullable=True)
+    lead_time_days= Column(Integer, nullable=True)
+    availability  = Column(String, nullable=True)
+    called_number = Column(String, nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------
@@ -408,3 +428,136 @@ def db_get_scenario_runs(limit: int = 10) -> List[dict]:
         ]
     finally:
         db.close()
+
+
+def db_save_supplier_call(entry: dict) -> dict:
+    """Save or update a supplier voice call record in the database."""
+    db = SessionLocal()
+    try:
+        existing = None
+        if entry.get("id"):
+            existing = db.query(SupplierCallDB).filter(SupplierCallDB.id == entry["id"]).first()
+        elif entry.get("call_sid"):
+            existing = db.query(SupplierCallDB).filter(SupplierCallDB.call_sid == entry["call_sid"]).first()
+
+        if existing:
+            if "price" in entry and entry["price"] is not None:
+                existing.price = float(entry["price"])
+            if "transcription" in entry and entry["transcription"]:
+                existing.transcription = entry["transcription"]
+            if "status" in entry:
+                existing.status = entry["status"]
+            if "availability" in entry:
+                existing.availability = entry["availability"]
+            db.commit()
+            return {"id": existing.id, "status": existing.status, "price": existing.price}
+
+        call_record = SupplierCallDB(
+            id=entry.get("id", str(uuid.uuid4()) if "uuid" in globals() else os.urandom(8).hex()),
+            call_sid=entry.get("call_sid"),
+            sku_id=entry.get("sku_id", "UNKNOWN"),
+            supplier_name=entry.get("supplier_name", "Supplier"),
+            supplier_id=entry.get("supplier_id"),
+            reason=entry.get("reason"),
+            status=entry.get("status", "completed"),
+            source=entry.get("source", "real_call"),
+            price=float(entry["price"]) if entry.get("price") is not None else None,
+            transcription=entry.get("transcription"),
+            lead_time_days=entry.get("lead_time_days"),
+            availability=entry.get("availability"),
+            called_number=entry.get("called_number"),
+        )
+        db.add(call_record)
+        db.commit()
+        db.refresh(call_record)
+        return {
+            "id": call_record.id,
+            "call_sid": call_record.call_sid,
+            "sku_id": call_record.sku_id,
+            "supplier_name": call_record.supplier_name,
+            "price": call_record.price,
+            "status": call_record.status,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error("Error saving supplier call to DB: %s", e)
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def db_update_supplier_call_price(call_sid: str, price: Optional[float], transcription: str = "", sku_id: str = "UNKNOWN", supplier_name: str = "Supplier") -> dict:
+    """Update quoted price and transcription for a call by its Call SID, or insert new record."""
+    db = SessionLocal()
+    try:
+        row = None
+        if call_sid:
+            row = db.query(SupplierCallDB).filter(SupplierCallDB.call_sid == call_sid).first()
+        if not row and sku_id != "UNKNOWN":
+            row = db.query(SupplierCallDB).filter(SupplierCallDB.sku_id == sku_id).order_by(desc(SupplierCallDB.created_at)).first()
+
+        if row:
+            if price is not None:
+                row.price = price
+            if transcription:
+                row.transcription = transcription
+            if call_sid and not row.call_sid:
+                row.call_sid = call_sid
+            row.availability = "in_stock"
+            row.status = "completed"
+            db.commit()
+            return {"call_sid": row.call_sid, "price": row.price, "transcription": row.transcription}
+        else:
+            new_record = SupplierCallDB(
+                id=str(uuid.uuid4()),
+                call_sid=call_sid,
+                sku_id=sku_id,
+                supplier_name=supplier_name,
+                supplier_id="SUP-01",
+                reason="Price negotiation",
+                status="completed",
+                source="real_call",
+                price=price,
+                transcription=transcription,
+                lead_time_days=3,
+                availability="in_stock",
+                called_number=os.environ.get("DEMO_SUPPLIER_PHONE_NUMBER", ""),
+            )
+            db.add(new_record)
+            db.commit()
+            return {"call_sid": call_sid, "price": price, "transcription": transcription}
+    except Exception as e:
+        db.rollback()
+        logger.error("Error updating supplier call price in DB: %s", e)
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+def db_get_supplier_calls(limit: int = 50) -> List[dict]:
+    """Retrieve recent supplier calls from DB."""
+    db = SessionLocal()
+    try:
+        rows = db.query(SupplierCallDB).order_by(desc(SupplierCallDB.created_at)).limit(limit).all()
+        return [
+            {
+                "id": r.id,
+                "call_sid": r.call_sid,
+                "sku_id": r.sku_id,
+                "supplier_name": r.supplier_name,
+                "supplier_id": r.supplier_id,
+                "reason": r.reason,
+                "status": r.status,
+                "source": r.source,
+                "price": r.price,
+                "transcription": r.transcription,
+                "lead_time_days": r.lead_time_days,
+                "availability": r.availability,
+                "called_number": r.called_number,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+            }
+            for r in rows
+        ]
+    finally:
+        db.close()
+

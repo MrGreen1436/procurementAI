@@ -107,6 +107,12 @@ export default function DashboardPage() {
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
 
+  // Chart Controls
+  const [dateRange, setDateRange] = useState<string>("1M");
+  const [showXGB, setShowXGB] = useState<boolean>(true);
+  const [showETS, setShowETS] = useState<boolean>(false);
+  const [showLSTM, setShowLSTM] = useState<boolean>(false);
+
   useEffect(() => {
     fetchKPIs().then(setKpis);
     fetchAlerts().then(setAlerts);
@@ -131,15 +137,19 @@ export default function DashboardPage() {
     }
   }, [uniqueSkus, selectedSku]);
 
-  const chartData = history
-    .filter((h) => h.sku === selectedSku)
-    .map((h) => ({
+  let filteredHistory = history.filter((h) => h.sku === selectedSku);
+  if (dateRange !== "ALL" && filteredHistory.length > 0) {
+    if (dateRange === "1M") filteredHistory = filteredHistory.slice(-60); // 30 past + 30 future
+    else if (dateRange === "1W") filteredHistory = filteredHistory.slice(-37); // 7 past + 30 future
+  }
+
+  const chartData = filteredHistory.map((h) => ({
       date: h.date,
       ActualLevel: h.actualLevel,
       ForecastedLevel: h.forecastedLevel,
       EtsForecastedLevel: h.etsForecastedLevel,
       LstmForecastedLevel: h.lstmForecastedLevel,
-    }));
+  }));
 
   const filteredAlerts =
     alertFilter === "all" ? alerts : alerts.filter((a) => a.riskLevel === alertFilter);
@@ -188,8 +198,8 @@ export default function DashboardPage() {
     if (!file) return;
     
     toast.info("Uploading Dataset", {
-      description: `Uploading ${file.name} and retraining ML models...`,
-      duration: 8000,
+      description: `Uploading and processing ${file.name}...`,
+      duration: 5000,
     });
     
     const { uploadDataset } = await import("@/lib/api");
@@ -280,21 +290,52 @@ export default function DashboardPage() {
         {/* Chart */}
         <div className="lg:col-span-2">
           <Card className="shadow-sm h-full">
-            <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardHeader className="flex flex-col space-y-3 sm:flex-row sm:items-center sm:justify-between sm:space-y-0 pb-2">
               <CardTitle className="text-base font-semibold">Inventory Forecast vs Actual</CardTitle>
-              <div className="w-56">
-                <Select value={selectedSku} onValueChange={(val) => val && setSelectedSku(val)}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue placeholder="Select SKU" />
+              <div className="flex flex-wrap items-center gap-2">
+                {/* Model Toggles */}
+                <div className="flex items-center gap-1 bg-muted/50 p-1 rounded-md border text-xs">
+                  <label className="flex items-center gap-1.5 px-2 py-1 cursor-pointer hover:bg-background rounded transition-colors">
+                    <input type="checkbox" checked={showXGB} onChange={(e) => setShowXGB(e.target.checked)} className="accent-slate-500" />
+                    XGBoost
+                  </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 cursor-pointer hover:bg-background rounded transition-colors">
+                    <input type="checkbox" checked={showETS} onChange={(e) => setShowETS(e.target.checked)} className="accent-amber-500" />
+                    ETS
+                  </label>
+                  <label className="flex items-center gap-1.5 px-2 py-1 cursor-pointer hover:bg-background rounded transition-colors">
+                    <input type="checkbox" checked={showLSTM} onChange={(e) => setShowLSTM(e.target.checked)} className="accent-purple-500" />
+                    LSTM
+                  </label>
+                </div>
+
+                {/* Date Range Select */}
+                <Select value={dateRange} onValueChange={setDateRange}>
+                  <SelectTrigger className="h-8 w-24 text-xs">
+                    <SelectValue placeholder="Range" />
                   </SelectTrigger>
                   <SelectContent>
-                    {uniqueSkus.map((sku) => (
-                      <SelectItem key={sku} value={sku} className="text-xs">
-                        {sku}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="1W">1 Week</SelectItem>
+                    <SelectItem value="1M">1 Month</SelectItem>
+                    <SelectItem value="ALL">All Time</SelectItem>
                   </SelectContent>
                 </Select>
+
+                {/* SKU Select */}
+                <div className="w-32">
+                  <Select value={selectedSku} onValueChange={(val) => val && setSelectedSku(val)}>
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue placeholder="Select SKU" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {uniqueSkus.map((sku) => (
+                        <SelectItem key={sku} value={sku} className="text-xs">
+                          {sku}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -306,16 +347,17 @@ export default function DashboardPage() {
                       dataKey="date"
                       tick={{ fontSize: 11, fill: "currentColor" }}
                       className="text-muted-foreground"
-                      tickFormatter={(val) => val.split("-").slice(1).join("/")}
+                      tickFormatter={(val) => val ? val.split("-").slice(1).join("/") : ""}
                       axisLine={false}
                       tickLine={false}
-                      minTickGap={30}
+                      minTickGap={15}
                     />
                     <YAxis
                       tick={{ fontSize: 11, fill: "currentColor" }}
                       className="text-muted-foreground"
                       axisLine={false}
                       tickLine={false}
+                      domain={['auto', 'auto']}
                       tickFormatter={(val) => (val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val)}
                     />
                     <Tooltip
@@ -339,42 +381,48 @@ export default function DashboardPage() {
                       isAnimationActive
                       animationDuration={800}
                     />
-                    <Line
-                      type="monotone"
-                      dataKey="ForecastedLevel"
-                      name="XGBoost Forecast"
-                      stroke="#94a3b8"
-                      strokeWidth={2}
-                      strokeDasharray="5 5"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={200}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="EtsForecastedLevel"
-                      name="ETS Forecast"
-                      stroke="#f59e0b"
-                      strokeWidth={2}
-                      strokeDasharray="3 3"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={400}
-                    />
-                    <Line
-                      type="monotone"
-                      dataKey="LstmForecastedLevel"
-                      name="LSTM Forecast"
-                      stroke="#8b5cf6"
-                      strokeWidth={2}
-                      strokeDasharray="4 1 2"
-                      dot={false}
-                      isAnimationActive
-                      animationDuration={800}
-                      animationBegin={600}
-                    />
+                    {showXGB && (
+                      <Line
+                        type="monotone"
+                        dataKey="ForecastedLevel"
+                        name="XGBoost Forecast"
+                        stroke="#94a3b8"
+                        strokeWidth={2}
+                        strokeDasharray="5 5"
+                        dot={false}
+                        isAnimationActive
+                        animationDuration={800}
+                        animationBegin={200}
+                      />
+                    )}
+                    {showETS && (
+                      <Line
+                        type="monotone"
+                        dataKey="EtsForecastedLevel"
+                        name="ETS Forecast"
+                        stroke="#f59e0b"
+                        strokeWidth={2}
+                        strokeDasharray="3 3"
+                        dot={false}
+                        isAnimationActive
+                        animationDuration={800}
+                        animationBegin={400}
+                      />
+                    )}
+                    {showLSTM && (
+                      <Line
+                        type="monotone"
+                        dataKey="LstmForecastedLevel"
+                        name="LSTM Forecast"
+                        stroke="#8b5cf6"
+                        strokeWidth={2}
+                        strokeDasharray="4 1 2"
+                        dot={false}
+                        isAnimationActive
+                        animationDuration={800}
+                        animationBegin={600}
+                      />
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>

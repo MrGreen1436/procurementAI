@@ -163,3 +163,59 @@ export async function parseEmail(emailText: string): Promise<EmailParseResult> {
   if (!res.ok) throw new Error(`Email parse failed: ${res.status}`);
   return res.json();
 }
+
+import { CategorySummary, InventoryRow, InventoryDatasetStatus } from "../types";
+
+export async function fetchInventoryStatus(): Promise<InventoryDatasetStatus> {
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/inventory/status");
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchInventoryStatus error:", e);
+  }
+  return { has_dataset: false, filename: null, row_count: 0 };
+}
+
+export async function getInventoryCategorySummary(): Promise<CategorySummary[]> {
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/inventory/summary");
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("getInventoryCategorySummary error:", e);
+  }
+  // Strictly no hardcoded fallback if dataset is missing
+  return [];
+}
+
+export async function fetchInventoryTransactions(category?: string | null): Promise<InventoryRow[]> {
+  try {
+    const url = category
+      ? `http://127.0.0.1:8000/api/inventory/transactions?category=${encodeURIComponent(category)}`
+      : "http://127.0.0.1:8000/api/inventory/transactions";
+    const res = await fetch(url);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchInventoryTransactions error:", e);
+  }
+  // Strictly no hardcoded fallback if dataset is missing
+  return [];
+}
+
+export async function adjustStock(data: { store_id: string; product_id: string; inventory_level: number }) {
+  const res = await fetch("http://127.0.0.1:8000/api/inventory/adjust", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`Stock adjustment failed: ${res.status}`);
+  return res.json();
+}
+
+export async function resetInventoryDataset() {
+  const res = await fetch("http://127.0.0.1:8000/api/inventory/reset", {
+    method: "POST",
+  });
+  if (!res.ok) throw new Error(`Reset failed: ${res.status}`);
+  return res.json();
+}
+

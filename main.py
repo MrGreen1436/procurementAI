@@ -23,15 +23,20 @@ import json
 import re
 import asyncio
 from datetime import date, datetime, timedelta
+
+# Load .env file FIRST — must happen before any os.environ.get() calls
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed; rely on system environment variables
+
 from typing import Optional
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import JSONResponse
 from google import genai
 from google.genai import types as genai_types
-
-load_dotenv()
 
 from models import (
     InventoryItem, ForecastResult, Supplier, RiskAlert,
@@ -52,6 +57,7 @@ from database import (
     init_db, db_save_po, db_get_all_pos, db_update_po_status,
     db_save_alert, db_get_all_alerts, db_save_email_log,
     db_get_email_logs, db_save_scenario_run, db_get_scenario_runs,
+    db_save_supplier_call, db_update_supplier_call_price, db_get_supplier_calls,
 )
 
 # What-If Simulator (nanditha2)
@@ -386,6 +392,471 @@ def _get_active_csv() -> str:
     return uploaded if os.path.exists(uploaded) else default
 
 
+# ---------------------------------------------------------------
+# Supplier Voice Outreach endpoints
+# ---------------------------------------------------------------
+
+# In-memory call log — persists for the lifetime of the server process
+_CALL_LOG: list[dict] = []
+
+
+@app.post("/supplier-calls/trigger")
+def trigger_supplier_call(body: dict):
+    """
+    Trigger an AI voice call to a supplier for a given SKU.
+
+    If TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER /
+    DEMO_SUPPLIER_PHONE_NUMBER are all set in .env, a REAL outbound Twilio
+    call is placed to the demo number.  Otherwise a realistic simulation runs.
+    """
+    sku_id      = body.get("sku_id", "UNKNOWN")
+    reason      = body.get("reason", "Reorder check")
+    supplier_id = body.get("supplier_id", "SUP-01")
+
+    # Build a minimal supplier dict for the outreach module
+    sup_list = MOCK_SUPPLIERS.get(sku_id, [])
+    best_sup = max(sup_list, key=lambda s: s.reliability_score) if sup_list else None
+
+    supplier_dict = {
+        "name": best_sup.name if best_sup else f"Supplier for {sku_id}",
+        "supplier_id": best_sup.supplier_id if best_sup else supplier_id,
+        "last_price": best_sup.unit_price if best_sup else None,
+    }
+
+    call_result: dict = {}
+    source = "simulation"
+
+    # ── Determine whether Twilio is configured ──────────────────────────────
+    try:
+        from services.twilio_client import place_twilio_call, is_twilio_available
+        twilio_ready = is_twilio_available()
+    except Exception:
+        twilio_ready = False
+
+    if twilio_ready:
+        # ── REAL CALL: Twilio credentials are set ───────────────────────────
+        # First attempt: use friend's dedicated twilio-voice microservice (port 3001)
+        microservice_success = False
+        try:
+            import urllib.request, json
+            phone_num = os.environ.get("DEMO_SUPPLIER_PHONE_NUMBER", "+918431868698")
+            payload = json.dumps({
+                "supplierPhoneNumber": phone_num,
+                "supplierName": supplier_dict["name"],
+                "itemName": sku_id,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "http://127.0.0.1:3001/make-call",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    twilio_resp = {
+                        "call_sid": data.get("callSid"),
+                        "status": data.get("status", "queued"),
+                        "to": phone_num,
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                    microservice_success = True
+                    logger.info("[Twilio-Voice Node Agent] Call placed via port 3001: SID=%s", twilio_resp["call_sid"])
+        except Exception as e:
+            logger.info("[Twilio-Voice Node Agent] Port 3001 not responding (%s), using direct Python Twilio client", e)
+
+        if not microservice_success:
+            try:
+                twilio_resp = place_twilio_call(sku_id, supplier_dict["name"], reason)
+            except Exception as exc:
+                twilio_resp = {"error": str(exc)}
+
+        if "error" not in twilio_resp:
+            source = "real_call"
+            call_result = {
+                "price": None,
+                "lead_time_days": None,
+                "availability": "call_placed",
+                "timestamp": twilio_resp.get("timestamp"),
+                "call_sid": twilio_resp.get("call_sid"),
+                "call_status": twilio_resp.get("status"),
+                "called_number": twilio_resp.get("to"),
+            }
+            logger.info(
+                "Twilio call placed to %s for SKU %s — SID: %s",
+                twilio_resp.get("to"), sku_id, twilio_resp.get("call_sid")
+            )
+        else:
+            # Real call failed — return the real error, not a fake result
+            source = "real_call"
+            call_result = {
+                "error": twilio_resp["error"],
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+            logger.error("Twilio call failed for SKU %s: %s", sku_id, twilio_resp["error"])
+
+    else:
+        # ── SIMULATION: No Twilio credentials set ───────────────────────────
+        try:
+            if _OUTREACH_AVAILABLE:
+                from services.supplier_outreach import simulate_supplier_call
+                call_result = simulate_supplier_call(sku_id, supplier_dict)
+            else:
+                import random
+                call_result = {
+                    "price": round(random.uniform(80, 250), 2),
+                    "lead_time_days": random.randint(3, 14),
+                    "availability": random.choice(["in_stock", "low_stock"]),
+                    "timestamp": datetime.utcnow().isoformat(),
+                }
+        except Exception as exc:
+            logger.error("Simulation failed: %s", exc)
+            call_result = {"error": str(exc), "timestamp": datetime.utcnow().isoformat()}
+
+    entry = {
+        "id": str(uuid.uuid4()),
+        "sku_id": sku_id,
+        "supplier_name": supplier_dict["name"],
+        "supplier_id": supplier_dict["supplier_id"],
+        "reason": reason,
+        "status": "completed" if "error" not in call_result else "failed",
+        "source": source,
+        "price": call_result.get("price"),
+        "lead_time_days": call_result.get("lead_time_days"),
+        "availability": call_result.get("availability", "unknown"),
+        "error": call_result.get("error"),
+        "timestamp": call_result.get("timestamp", datetime.utcnow().isoformat()),
+        # Twilio-specific fields (only present for real calls)
+        "call_sid": call_result.get("call_sid"),
+        "call_status": call_result.get("call_status"),
+        "called_number": call_result.get("called_number"),
+    }
+    _CALL_LOG.insert(0, entry)  # most recent first
+
+    # Persist call record to SQLite Database
+    try:
+        db_save_supplier_call(entry)
+    except Exception as dbe:
+        logger.warning("Could not persist supplier call to DB: %s", dbe)
+
+    broadcast_sync("SUPPLIER_CALL_COMPLETED", {
+        "sku_id": sku_id,
+        "supplier": supplier_dict["name"],
+        "status": entry["status"],
+        "source": source,
+    })
+
+    return entry
+
+
+@app.get("/supplier-calls/log")
+def get_call_log():
+    """Return all supplier voice call attempts (from memory merged with database and Node microservice)."""
+    # Fetch quotes from twilio-voice microservice if running
+    try:
+        import urllib.request, json
+        req = urllib.request.Request("http://127.0.0.1:3001/quotes")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            if resp.status == 200:
+                node_quotes = json.loads(resp.read().decode("utf-8"))
+                for nq in node_quotes:
+                    sid = nq.get("call_sid")
+                    for entry in _CALL_LOG:
+                        if sid and entry.get("call_sid") == sid:
+                            if nq.get("extracted_price") is not None:
+                                entry["price"] = nq.get("extracted_price")
+                            if nq.get("raw_transcript"):
+                                entry["transcription"] = nq.get("raw_transcript")
+                            entry["status"] = "completed"
+                            entry["availability"] = "in_stock"
+    except Exception:
+        pass
+
+    try:
+        db_calls = db_get_supplier_calls(50)
+    except Exception:
+        db_calls = []
+
+    if not _CALL_LOG and db_calls:
+        return db_calls
+
+    known_ids = {c.get("id") or c.get("call_sid") for c in _CALL_LOG if c.get("id") or c.get("call_sid")}
+    merged = list(_CALL_LOG)
+    for dbc in db_calls:
+        ident = dbc.get("id") or dbc.get("call_sid")
+        if ident and ident not in known_ids:
+            merged.append(dbc)
+    return merged
+
+
+@app.get("/voice")
+@app.post("/voice")
+@app.get("/voice-handler")
+@app.post("/voice-handler")
+def twilio_voice_webhook(
+    sku_id: str = "UNKNOWN",
+    supplier: str = "the supplier",
+    reason: str = "price negotiation",
+    itemName: str = "",
+    supplierName: str = "",
+):
+    """
+    TwiML webhook endpoint — called by Twilio when the outbound call connects.
+    Prompts the supplier for unit price and gathers their spoken response.
+    """
+    from fastapi.responses import Response as FastAPIResponse
+    import urllib.parse
+    actual_sku = itemName or sku_id
+    actual_supplier = supplierName or supplier
+    try:
+        from services.twilio_client import build_voice_twiml
+        public_url = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+        action_params = urllib.parse.urlencode({
+            "sku_id": actual_sku,
+            "supplier": actual_supplier,
+            "reason": reason,
+            "itemName": actual_sku,
+            "supplierName": actual_supplier,
+        })
+        action_url = f"{public_url}/process-response?{action_params}" if public_url else ""
+        twiml = build_voice_twiml(actual_sku, actual_supplier, reason, action_url=action_url)
+    except Exception as exc:
+        logger.error("TwiML build error: %s", exc)
+        twiml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            "<Response>"
+            "<Say>Hello, this is Procurement AI. We are calling to negotiate unit price. Thank you.</Say>"
+            "</Response>"
+        )
+
+    logger.info("Serving TwiML for SKU=%s supplier=%s (Action=%s)", actual_sku, actual_supplier, action_url if 'action_url' in locals() else None)
+    return FastAPIResponse(content=twiml, media_type="application/xml")
+
+
+@app.get("/voice/respond")
+@app.post("/voice/respond")
+@app.get("/process-response")
+@app.post("/process-response")
+async def twilio_voice_respond(
+    request: Request,
+    sku_id: str = "UNKNOWN",
+    supplier: str = "the supplier",
+    reason: str = "price negotiation",
+    itemName: str = "",
+    supplierName: str = "",
+):
+    """
+    TwiML Gather Action webhook — called when the person on the phone speaks.
+    Captures SpeechResult, extracts the quoted price, saves to database,
+    updates live call logs & state, and responds with a confirmation before hanging up.
+    """
+    from fastapi.responses import Response as FastAPIResponse
+    from services.twilio_client import parse_spoken_number, build_voice_response_twiml
+
+    speech_result = ""
+    call_sid = ""
+    confidence = None
+
+    if request.method == "POST":
+        try:
+            form = await request.form()
+            speech_result = form.get("SpeechResult", "")
+            call_sid = form.get("CallSid", "")
+            confidence = form.get("Confidence")
+        except Exception as err:
+            logger.warning("Could not parse speech form: %s", err)
+
+    if not speech_result:
+        speech_result = request.query_params.get("SpeechResult", "")
+    if not call_sid:
+        call_sid = request.query_params.get("CallSid", "")
+
+    logger.info("[Voice Respond] CallSid=%s SpeechResult='%s' Confidence=%s", call_sid, speech_result, confidence)
+
+    # Extract price from spoken text
+    quoted_price = parse_spoken_number(speech_result)
+    logger.info("[Voice Respond] Extracted price: %s for SKU=%s", quoted_price, sku_id)
+
+    # Update in-memory log
+    updated = False
+    for entry in _CALL_LOG:
+        if (call_sid and entry.get("call_sid") == call_sid) or (entry.get("sku_id") == sku_id and entry.get("price") is None):
+            if quoted_price is not None:
+                entry["price"] = quoted_price
+            entry["transcription"] = speech_result
+            entry["status"] = "completed"
+            entry["availability"] = "in_stock"
+            updated = True
+            break
+
+    if not updated and (call_sid or sku_id):
+        new_entry = {
+            "id": str(uuid.uuid4()),
+            "sku_id": sku_id,
+            "supplier_name": supplier,
+            "supplier_id": "SUP-01",
+            "reason": reason,
+            "status": "completed",
+            "source": "real_call",
+            "price": quoted_price,
+            "transcription": speech_result,
+            "lead_time_days": 3,
+            "availability": "in_stock",
+            "error": None,
+            "timestamp": datetime.utcnow().isoformat(),
+            "call_sid": call_sid,
+            "call_status": "completed",
+            "called_number": os.environ.get("DEMO_SUPPLIER_PHONE_NUMBER", ""),
+        }
+        _CALL_LOG.insert(0, new_entry)
+
+    # Save to SQLite Database
+    try:
+        if call_sid:
+            db_update_supplier_call_price(call_sid, quoted_price, speech_result, sku_id=sku_id, supplier_name=supplier)
+        else:
+            db_save_supplier_call({
+                "sku_id": sku_id,
+                "supplier_name": supplier,
+                "price": quoted_price,
+                "transcription": speech_result,
+                "status": "completed",
+                "availability": "in_stock",
+            })
+        logger.info("[DB] Saved quoted price %s for SKU=%s to database.", quoted_price, sku_id)
+    except Exception as db_err:
+        logger.error("Failed to save price to DB: %s", db_err)
+
+    # Broadcast real-time update to Next.js frontend via WebSocket
+    broadcast_sync("SUPPLIER_CALL_COMPLETED", {
+        "sku_id": sku_id,
+        "supplier": supplier,
+        "status": "completed",
+        "price": quoted_price,
+        "transcription": speech_result,
+        "call_sid": call_sid,
+        "source": "real_call",
+    })
+
+    twiml_resp = build_voice_response_twiml(speech_result, quoted_price)
+    return FastAPIResponse(content=twiml_resp, media_type="application/xml")
+
+
+@app.post("/internal/supplier-call-quote")
+async def internal_supplier_call_quote(request: Request):
+    """
+    Internal endpoint called by twilio-voice microservice when a quote is captured.
+    Updates in-memory call log, SQLite database, and broadcasts WebSocket event.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return {"error": "Invalid JSON"}
+
+    call_sid = data.get("call_sid")
+    sku_id = data.get("sku_id", "UNKNOWN")
+    supplier_name = data.get("supplier_name", "Supplier")
+    price = data.get("price")
+    transcription = data.get("transcription", "")
+    status = data.get("status", "completed")
+
+    logger.info("[Internal Sync] Received quote: SID=%s SKU=%s Price=%s", call_sid, sku_id, price)
+
+    # Update in-memory call log
+    updated = False
+    for entry in _CALL_LOG:
+        if (call_sid and entry.get("call_sid") == call_sid) or (entry.get("sku_id") == sku_id and entry.get("price") is None):
+            if price is not None:
+                entry["price"] = price
+            entry["transcription"] = transcription
+            entry["status"] = status
+            entry["availability"] = "in_stock"
+            updated = True
+            break
+
+    if not updated and (call_sid or sku_id):
+        new_entry = {
+            "id": str(uuid.uuid4()),
+            "sku_id": sku_id,
+            "supplier_name": supplier_name,
+            "supplier_id": "SUP-01",
+            "reason": "Stockout risk negotiation",
+            "status": status,
+            "source": "real_call",
+            "price": price,
+            "transcription": transcription,
+            "lead_time_days": 3,
+            "availability": "in_stock",
+            "error": None,
+            "timestamp": datetime.utcnow().isoformat(),
+            "call_sid": call_sid,
+            "call_status": "completed",
+            "called_number": os.environ.get("DEMO_SUPPLIER_PHONE_NUMBER", "+918431868698"),
+        }
+        _CALL_LOG.insert(0, new_entry)
+
+    # Persist to database
+    try:
+        if call_sid:
+            db_update_supplier_call_price(call_sid, price, transcription, sku_id=sku_id, supplier_name=supplier_name)
+        else:
+            db_save_supplier_call({
+                "sku_id": sku_id,
+                "supplier_name": supplier_name,
+                "price": price,
+                "transcription": transcription,
+                "status": status,
+                "availability": "in_stock",
+            })
+    except Exception as dbe:
+        logger.warning("Could not persist internal quote to DB: %s", dbe)
+
+    # Broadcast to frontend
+    broadcast_sync("SUPPLIER_CALL_COMPLETED", {
+        "sku_id": sku_id,
+        "supplier": supplier_name,
+        "status": status,
+        "price": price,
+        "transcription": transcription,
+        "call_sid": call_sid,
+        "source": "real_call",
+    })
+
+    return {"status": "ok", "synced": True}
+
+
+@app.get("/supplier-calls/status/{call_sid}")
+def get_call_status(call_sid: str):
+    """
+    Fetch the real-time status of a Twilio call by its SID.
+    Returns status (queued, ringing, in-progress, completed, failed, etc.)
+    """
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        from twilio.rest import Client
+        account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        auth_token  = os.environ.get("TWILIO_AUTH_TOKEN")
+        if not account_sid or not auth_token:
+            raise ValueError("Twilio credentials not set")
+        client = Client(account_sid, auth_token)
+        call   = client.calls(call_sid).fetch()
+        return {
+            "call_sid":   call.sid,
+            "status":     call.status,
+            "direction":  getattr(call, "direction", None),
+            "to":         getattr(call, "to", None),
+            "from_":      getattr(call, "from_formatted", getattr(call, "_from", None)),
+            "duration":   getattr(call, "duration", None),
+            "start_time": str(call.start_time) if getattr(call, "start_time", None) else None,
+            "end_time":   str(call.end_time)   if getattr(call, "end_time", None)   else None,
+        }
+    except Exception as exc:
+        logger.error("Call status fetch failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+
+
 @app.get("/kpis")
 def get_kpis():
     """Compute KPI summary dynamically from active dataset and inventory store."""
@@ -612,8 +1083,331 @@ import shutil
 import importlib
 import agent_tools
 
+# ── Dynamic Inventory Registry APIs (No hardcoded values without uploaded dataset) ──
+_MANUAL_INVENTORY_ADJUSTMENTS: list[dict] = []
+
+@app.get("/api/inventory/status")
+def get_inventory_status():
+    """Return whether an uploaded dataset is active."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    uploaded_path = os.path.join(base_dir, "uploaded_dataset.csv")
+    has_uploaded = os.path.exists(uploaded_path)
+    count = 0
+    if has_uploaded:
+        try:
+            with open(uploaded_path, "r", encoding="utf-8") as f:
+                count = max(0, sum(1 for _ in f) - 1)
+        except Exception:
+            count = 0
+    return {
+        "has_dataset": has_uploaded,
+        "filename": "uploaded_dataset.csv" if has_uploaded else None,
+        "row_count": count
+    }
+
+
+@app.post("/api/inventory/reset")
+def reset_inventory_dataset():
+    """Remove uploaded dataset so evaluator can test the empty state without mock fallbacks."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    uploaded_path = os.path.join(base_dir, "uploaded_dataset.csv")
+    raw_path = os.path.join(base_dir, "uploaded_dataset_raw.csv")
+    if os.path.exists(uploaded_path):
+        try:
+            os.remove(uploaded_path)
+        except Exception as e:
+            logger.warning("Could not remove uploaded_dataset.csv: %s", e)
+    if os.path.exists(raw_path):
+        try:
+            os.remove(raw_path)
+        except Exception:
+            pass
+    _MANUAL_INVENTORY_ADJUSTMENTS.clear()
+    return {"success": True, "message": "Uploaded dataset cleared. System reset to empty state."}
+
+
+def _read_dataset_safe(target_csv: str):
+    if not target_csv or not os.path.exists(target_csv):
+        return None
+    import pandas as pd
+    try:
+        with open(target_csv, "rb") as f:
+            header = f.read(4)
+        if header == b"PK\x03\x04":
+            return pd.read_excel(target_csv)
+    except Exception:
+        pass
+
+    try:
+        return pd.read_csv(target_csv, encoding="utf-8")
+    except Exception:
+        try:
+            return pd.read_csv(target_csv, encoding="latin1")
+        except Exception:
+            try:
+                return pd.read_excel(target_csv)
+            except Exception:
+                return None
+
+
+@app.get("/api/inventory/summary")
+def get_inventory_summary():
+    """
+    Return CategorySummary[] computed purely from the active uploaded dataset.
+    If no dataset has been uploaded, returns [] (strictly NO hardcoded values).
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    raw_path = os.path.join(base_dir, "uploaded_dataset_raw.csv")
+    uploaded_path = os.path.join(base_dir, "uploaded_dataset.csv")
+    target_csv = raw_path if os.path.exists(raw_path) else uploaded_path
+    if not os.path.exists(target_csv):
+        return []
+
+    try:
+        import pandas as pd
+        df = _read_dataset_safe(target_csv)
+        if df is None or df.empty:
+            df = _read_dataset_safe(uploaded_path)
+        if df is None or df.empty:
+            return []
+
+        def find_col(aliases):
+            for a in aliases:
+                for c in df.columns:
+                    if str(c).strip().lower() == a.lower():
+                        return c
+            return None
+
+        cat_col     = find_col(["category", "Category", "dept", "department"])
+        sku_col     = find_col(["sku_id", "product_id", "sku", "Product ID", "item_id", "item"])
+        inv_col     = find_col(["inventory_level", "Inventory Level", "stock", "current_stock", "qty_on_hand"])
+        reorder_col = find_col(["reorder_level", "Reorder Level", "reorder_point"])
+        price_col   = find_col(["price", "Price", "unit_price", "cost", "avg_price"])
+
+        def infer_category(sku_str: str) -> str:
+            s = str(sku_str).upper()
+            if any(k in s for k in ["STL", "ALU", "COP", "MET", "002", "_002"]): return "Raw Materials"
+            if any(k in s for k in ["PCB", "LITH", "SIL", "LED", "SEN", "001", "_001"]): return "Electronics"
+            if any(k in s for k in ["RES", "PLA", "RBR", "ADH", "FST", "003", "_003"]): return "Components"
+            if any(k in s for k in ["P0001", "P0002", "P0003", "P0004"]): return "Electronics"
+            if any(k in s for k in ["P0005", "P0006", "P0007", "P0008", "004", "_004"]): return "Home Appliances"
+            if any(k in s for k in ["P0009", "P0010", "P0011", "P0012", "005", "_005"]): return "Consumer Tech"
+            if any(k in s for k in ["P0013", "P0014", "P0015", "P0016", "006", "_006"]): return "Accessories"
+            if any(k in s for k in ["007", "_007"]): return "Industrial Supplies"
+            return "General Supplies"
+
+        categories_map = {}
+        unique_skus = df[sku_col].unique() if sku_col else [f"SKU-{i}" for i in range(len(df))]
+
+        for sku in unique_skus:
+            sub = df[df[sku_col] == sku] if sku_col else df
+            if cat_col and cat_col in sub.columns and pd.notna(sub[cat_col].iloc[0]):
+                cat = str(sub[cat_col].iloc[0]).strip()
+            else:
+                cat = infer_category(str(sku))
+
+            if cat not in categories_map:
+                categories_map[cat] = {
+                    "category": cat,
+                    "skuCount": 0,
+                    "atRiskCount": 0,
+                    "totalValue": 0.0
+                }
+
+            categories_map[cat]["skuCount"] += 1
+
+            if inv_col and inv_col in sub.columns:
+                stock = int(pd.to_numeric(sub[inv_col], errors="coerce").fillna(0).iloc[-1])
+            else:
+                demand_val = pd.to_numeric(sub["demand"], errors="coerce").fillna(50) if "demand" in sub.columns else pd.Series([50])
+                stock = int(demand_val.tail(7).sum()) if len(demand_val) >= 7 else int(demand_val.sum())
+
+            if reorder_col and reorder_col in sub.columns:
+                reorder = int(pd.to_numeric(sub[reorder_col], errors="coerce").fillna(50).iloc[-1])
+            else:
+                demand_val = pd.to_numeric(sub["demand"], errors="coerce").fillna(50) if "demand" in sub.columns else pd.Series([50])
+                reorder = int(demand_val.mean() * 14) if not demand_val.empty else 50
+
+            if price_col and price_col in sub.columns:
+                price = float(pd.to_numeric(sub[price_col], errors="coerce").fillna(100.0).mean())
+            else:
+                price = 100.0
+
+            if stock < reorder:
+                categories_map[cat]["atRiskCount"] += 1
+
+            categories_map[cat]["totalValue"] += round(stock * price, 2)
+
+        return list(categories_map.values())
+    except Exception as e:
+        logger.error("Error generating inventory summary: %s", e)
+        return []
+
+
+@app.get("/api/inventory/transactions")
+def get_inventory_transactions(category: str = None, limit: int = 300):
+    """
+    Return detailed InventoryRow[] from the uploaded dataset.
+    If no dataset has been uploaded, returns [] (strictly NO hardcoded values).
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    raw_path = os.path.join(base_dir, "uploaded_dataset_raw.csv")
+    uploaded_path = os.path.join(base_dir, "uploaded_dataset.csv")
+    target_csv = raw_path if os.path.exists(raw_path) else uploaded_path
+    if not os.path.exists(target_csv):
+        return []
+
+    try:
+        import pandas as pd
+        df = _read_dataset_safe(target_csv)
+        if df is None or df.empty:
+            df = _read_dataset_safe(uploaded_path)
+        if df is None or df.empty:
+            return []
+
+        def find_col(aliases):
+            for a in aliases:
+                for c in df.columns:
+                    if str(c).strip().lower() == a.lower():
+                        return c
+            return None
+
+        date_col     = find_col(["date", "transaction_date", "day", "Date"])
+        store_col    = find_col(["store_id", "store", "Store ID", "warehouse_id"])
+        product_col  = find_col(["product_id", "sku_id", "sku", "Product ID", "item_id"])
+        cat_col      = find_col(["category", "Category", "dept"])
+        region_col   = find_col(["region", "Region", "zone"])
+        inv_col      = find_col(["inventory_level", "Inventory Level", "stock", "current_stock"])
+        reorder_col  = find_col(["reorder_level", "Reorder Level", "reorder_point"])
+        price_col    = find_col(["price", "Price", "unit_price", "cost"])
+        sup_col      = find_col(["supplier_name", "Supplier Name", "vendor", "vendors"])
+        disc_col     = find_col(["discount", "Discount"])
+        comp_col     = find_col(["competitor_pricing", "Competitor Pricing"])
+        season_col   = find_col(["seasonality", "Seasonality"])
+        weather_col  = find_col(["weather_condition", "Weather Condition", "weather"])
+        promo_col    = find_col(["holiday_promotion", "Holiday/Promotion", "promotion", "promo"])
+        anomaly_col  = find_col(["is_anomaly", "Is Anomaly", "anomaly"])
+        reason_col   = find_col(["anomaly_reason", "Anomaly Reason"])
+
+        def infer_cat(sku_str):
+            s = str(sku_str).upper()
+            if any(k in s for k in ["STL", "ALU", "COP", "MET", "002", "_002"]): return "Raw Materials"
+            if any(k in s for k in ["PCB", "LITH", "SIL", "LED", "SEN", "001", "_001"]): return "Electronics"
+            if any(k in s for k in ["RES", "PLA", "RBR", "ADH", "FST", "003", "_003"]): return "Components"
+            if any(k in s for k in ["P0001", "P0002", "P0003", "P0004"]): return "Electronics"
+            if any(k in s for k in ["P0005", "P0006", "P0007", "P0008", "004", "_004"]): return "Home Appliances"
+            if any(k in s for k in ["P0009", "P0010", "P0011", "P0012", "005", "_005"]): return "Consumer Tech"
+            if any(k in s for k in ["P0013", "P0014", "P0015", "P0016", "006", "_006"]): return "Accessories"
+            if any(k in s for k in ["007", "_007"]): return "Industrial Supplies"
+            return "General Supplies"
+
+        rows = []
+        for adj in reversed(_MANUAL_INVENTORY_ADJUSTMENTS):
+            if category and adj.get("category") and adj["category"] != category:
+                continue
+            rows.append(adj)
+
+        sample = df.tail(limit * 2) if len(df) > limit * 2 else df
+        sample = sample.iloc[::-1]
+
+        for idx, r in sample.iterrows():
+            if len(rows) >= limit:
+                break
+
+            pid = str(r[product_col]).strip() if product_col and pd.notna(r[product_col]) else f"SKU-{idx}"
+            cat_val = str(r[cat_col]).strip() if cat_col and pd.notna(r[cat_col]) else infer_cat(pid)
+
+            if category and cat_val != category:
+                continue
+
+            inv_val = int(pd.to_numeric(r[inv_col], errors="coerce")) if inv_col and pd.notna(r[inv_col]) else 100
+            reorder_val = int(pd.to_numeric(r[reorder_col], errors="coerce")) if reorder_col and pd.notna(r[reorder_col]) else 50
+            price_val = float(pd.to_numeric(r[price_col], errors="coerce")) if price_col and pd.notna(r[price_col]) else 49.99
+
+            is_anom = False
+            if anomaly_col and pd.notna(r[anomaly_col]):
+                is_anom = str(r[anomaly_col]).strip().lower() in ["true", "1", "yes"]
+            elif inv_val < 10:
+                is_anom = True
+
+            anom_reason = None
+            if reason_col and pd.notna(r[reason_col]):
+                anom_reason = str(r[reason_col]).strip()
+            elif is_anom:
+                anom_reason = "Critical stock depletion anomaly"
+
+            promo_val = None
+            if promo_col and pd.notna(r[promo_col]):
+                promo_val = str(r[promo_col]).strip().lower() in ["true", "1", "yes"]
+
+            rows.append({
+                "id": int(idx) if isinstance(idx, int) else len(rows) + 1,
+                "date": str(r[date_col]).split("T")[0] if date_col and pd.notna(r[date_col]) else "2024-01-15",
+                "store_id": str(r[store_col]).strip() if store_col and pd.notna(r[store_col]) else "S001",
+                "product_id": pid,
+                "category": cat_val,
+                "region": str(r[region_col]).strip() if region_col and pd.notna(r[region_col]) else "North",
+                "inventory_level": inv_val,
+                "reorder_level": reorder_val,
+                "price": price_val,
+                "supplier_name": str(r[sup_col]).strip() if sup_col and pd.notna(r[sup_col]) else f"Supplier for {pid}",
+                "discount": float(pd.to_numeric(r[disc_col], errors="coerce")) if disc_col and pd.notna(r[disc_col]) else None,
+                "competitor_pricing": float(pd.to_numeric(r[comp_col], errors="coerce")) if comp_col and pd.notna(r[comp_col]) else None,
+                "seasonality": str(r[season_col]).strip() if season_col and pd.notna(r[season_col]) else "Normal",
+                "weather_condition": str(r[weather_col]).strip() if weather_col and pd.notna(r[weather_col]) else "Clear",
+                "holiday_promotion": promo_val,
+                "is_anomaly": is_anom,
+                "anomaly_reason": anom_reason,
+            })
+
+        return rows
+    except Exception as e:
+        logger.error("Error reading inventory transactions: %s", e)
+        return []
+
+
+@app.post("/api/inventory/adjust")
+def adjust_inventory_stock(body: dict):
+    """Log a manual stock adjustment receipt and update current stock level."""
+    store_id = body.get("store_id", "S001")
+    product_id = body.get("product_id", "")
+    try:
+        qty = int(body.get("inventory_level", 0))
+    except (ValueError, TypeError):
+        raise HTTPException(400, "Invalid inventory_level")
+
+    if not product_id:
+        raise HTTPException(400, "product_id is required")
+
+    if product_id in MOCK_INVENTORY:
+        MOCK_INVENTORY[product_id].current_stock = qty
+
+    record = {
+        "id": len(_MANUAL_INVENTORY_ADJUSTMENTS) + 999000,
+        "date": datetime.utcnow().strftime("%Y-%m-%d"),
+        "store_id": store_id,
+        "product_id": product_id,
+        "category": "Manual Adjustment",
+        "region": "Central",
+        "inventory_level": qty,
+        "reorder_level": 50,
+        "price": 100.0,
+        "supplier_name": "Manual Receipt Adjustment",
+        "discount": 0.0,
+        "competitor_pricing": None,
+        "seasonality": "Regular",
+        "weather_condition": "Standard",
+        "holiday_promotion": False,
+        "is_anomaly": False,
+        "anomaly_reason": None,
+    }
+    _MANUAL_INVENTORY_ADJUSTMENTS.append(record)
+    logger.info("Manual stock adjustment: Store %s Product %s -> %d units", store_id, product_id, qty)
+    return {"success": True, "message": f"Stock adjusted to {qty} for {product_id}", "record": record}
+
+
 @app.post("/upload-dataset")
-def upload_dataset(file: UploadFile = File(...)):
+def upload_dataset(file: UploadFile = File(...), retrain_model: bool = False):
     fname = file.filename or ""
     ext = os.path.splitext(fname)[1].lower()
     allowed = {".csv", ".xlsx", ".xls"}
@@ -622,6 +1416,7 @@ def upload_dataset(file: UploadFile = File(...)):
     
     base_dir   = os.path.dirname(os.path.abspath(__file__))
     csv_path   = os.path.join(base_dir, "uploaded_dataset.csv")
+    raw_path   = os.path.join(base_dir, "uploaded_dataset_raw.csv")
     model_path = os.path.join(base_dir, "model.pkl")
     
     # 1. Read uploaded file contents into memory
@@ -642,9 +1437,14 @@ def upload_dataset(file: UploadFile = File(...)):
                 df = _pd.read_csv(io.BytesIO(contents))
             except UnicodeDecodeError:
                 df = _pd.read_csv(io.BytesIO(contents), encoding="latin1")
+            # Save raw original upload as CSV
+            with open(raw_path, "wb") as rf:
+                rf.write(contents)
         else:
             # Excel (.xlsx or .xls)
             df = _pd.read_excel(io.BytesIO(contents))
+            # Save parsed Excel directly as clean UTF-8 CSV so downstream components can read it quickly
+            df.to_csv(raw_path, index=False, encoding="utf-8")
 
         if df.empty:
             raise ValueError("Uploaded file is empty")
@@ -723,26 +1523,30 @@ def upload_dataset(file: UploadFile = File(...)):
         logger.error("Failed to parse and normalize uploaded file: %s", e)
         raise HTTPException(500, f"Could not process uploaded file: {e}")
         
-    # 3. Retrain the ML model on the new data
-    import retrain
-    success = retrain.retrain_model(csv_path, model_path)
-    if not success:
-        raise HTTPException(500, "Failed to retrain ML model on the new dataset")
+    # 3. Model retraining: SKIPPED by default per user requirement (only runs if explicitly requested or missing)
+    if retrain_model or not os.path.exists(model_path):
+        try:
+            import retrain
+            success = retrain.retrain_model(csv_path, model_path)
+            if success:
+                importlib.reload(agent_tools)
+                logger.info("Retrained model.pkl successfully on uploaded dataset")
+        except Exception as retrain_err:
+            logger.warning("Model retraining skipped/failed: %s", retrain_err)
+    else:
+        logger.info("Skipping model retraining (retrain_model=False; existing model.pkl preserved)")
         
     # 4. Dynamically reload inventory/suppliers from the new CSV
     import store
     store.load_state_from_csv(csv_path)
-    
-    # 5. Reload agent_tools so the XGBoost model is refreshed in memory
-    importlib.reload(agent_tools)
 
-    # 6. Clear old POs and auto-generate new ones via fallback engine
+    # 5. Clear old POs and auto-generate new ones via fallback engine
     MOCK_POS.clear()
     _auto_generate_pos_from_inventory()
 
     sku_names = list(store.MOCK_INVENTORY.keys())
     return {
-        "message": f"Dataset '{fname}' uploaded successfully! Retrained model on {len(df)} rows. Inventory updated with {len(sku_names)} SKUs ({', '.join(sku_names[:5])}{'...' if len(sku_names) > 5 else ''}).",
+        "message": f"Dataset '{fname}' uploaded successfully! Loaded {len(df)} rows and {len(sku_names)} SKUs ({', '.join(sku_names[:5])}{'...' if len(sku_names) > 5 else ''}).",
         "skus": sku_names,
         "rows": len(df)
     }

@@ -8,6 +8,8 @@ import {
   MessageSquare,
   ClipboardList,
   Activity,
+  PhoneCall,
+  Package,
   Menu,
   X,
   Moon,
@@ -20,7 +22,9 @@ const NAV_ITEMS = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Chat", href: "/chat", icon: MessageSquare },
   { name: "PO Queue", href: "/po-queue", icon: ClipboardList },
+  { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Simulator", href: "/simulator", icon: Activity },
+  { name: "Supplier Calls", href: "/outreach", icon: PhoneCall },
 ];
 
 export function Sidebar() {
