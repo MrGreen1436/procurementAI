@@ -1,5 +1,5 @@
-"""
-services/vapi_client.py — Vapi API client wrapper.
+﻿"""
+services/vapi_client.py ΓÇö Vapi API client wrapper.
 
 Provides two functions:
   - trigger_outbound_call(): initiates a real outbound call via Vapi REST API.
