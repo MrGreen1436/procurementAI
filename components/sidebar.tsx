@@ -12,6 +12,9 @@ import {
   X,
   Moon,
   Sun,
+  Phone,
+  BarChart2,
+  Shield,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "next-themes";
@@ -21,6 +24,9 @@ const NAV_ITEMS = [
   { name: "Chat", href: "/chat", icon: MessageSquare },
   { name: "PO Queue", href: "/po-queue", icon: ClipboardList },
   { name: "Simulator", href: "/simulator", icon: Activity },
+  { name: "Call Logs", href: "/call-logs", icon: Phone },
+  { name: "Model Eval", href: "/model-eval", icon: BarChart2 },
+  { name: "Audit Log", href: "/audit-log", icon: Shield },
 ];
 
 export function Sidebar() {

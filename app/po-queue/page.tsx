@@ -125,9 +125,30 @@ function POCard({
           </div>
         </div>
 
-        {/* Unit cost pill */}
-        <div className="text-xs text-muted-foreground">
-          Unit cost: <span className="font-medium text-foreground">{formatCurrency(po.unitCost)}</span>
+        {/* Unit cost pill & Quantitative Parameters */}
+        <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+          <div className="text-xs text-muted-foreground">
+            Unit cost: <span className="font-medium text-foreground">{formatCurrency(po.unitCost)}</span>
+          </div>
+          {(po.eoq != null || po.safetyStock != null) && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {po.eoq != null && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">
+                  ⚡ EOQ: {po.eoq.toLocaleString()}
+                </span>
+              )}
+              {po.safetyStock != null && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border border-indigo-500/20">
+                  🛡️ Safety Stock: {po.safetyStock.toLocaleString()}
+                </span>
+              )}
+              {po.reorderPoint != null && (
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                  📍 ROP: {po.reorderPoint.toLocaleString()}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Agent explanation (collapsible) */}

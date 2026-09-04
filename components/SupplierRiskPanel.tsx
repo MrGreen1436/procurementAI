@@ -188,12 +188,26 @@ export function SupplierRiskPanel({ suppliers, isLoading = false }: SupplierRisk
                   </div>
 
                   {/* Quantitative Stats Row */}
-                  <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-[#262838]/80 text-xs">
+                  <div className="grid grid-cols-4 gap-2 mt-3 pt-3 border-t border-[#262838]/80 text-xs">
                     <div>
                       <div className="text-[10px] text-[#8B87A0] uppercase">Risk Score</div>
                       <div className="text-base font-bold font-heading text-[#F5F1E8] mt-0.5">
                         {scoreDisplay}
                         <span className="text-[10px] font-normal text-[#8B87A0]">/100</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[10px] text-[#8B87A0] uppercase">Trust Score</div>
+                      <div className={`text-sm font-bold font-heading mt-0.5 ${
+                        supplier.trust_score != null
+                          ? supplier.trust_score >= 80 ? "text-[#34D399]"
+                            : supplier.trust_score >= 60 ? "text-[#FBBF24]"
+                            : "text-[#F0455C]"
+                          : "text-[#8B87A0]"
+                      }`}>
+                        {supplier.trust_score != null ? `${supplier.trust_score}` : "—"}
+                        {supplier.trust_score != null && <span className="text-[10px] font-normal text-[#8B87A0]">/100</span>}
                       </div>
                     </div>
 

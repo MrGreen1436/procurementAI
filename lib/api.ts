@@ -1,11 +1,11 @@
-import { Alert, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult } from "../types";
+import { Alert, AuditLogEntry, CallQuote, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult, SupplierRiskItem } from "../types";
 import { MOCK_ALERTS, MOCK_INVENTORY_HISTORY, MOCK_KPIS, MOCK_POS, MOCK_QA_PAIRS } from "./mockData";
 
 // Sleep utility to simulate network latency
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const API_BASE = typeof window !== "undefined" && window.location.hostname
-  ? `http://${window.location.hostname}:8000`
+const API_BASE = typeof window !== "undefined"
+  ? "/backend"
   : "http://127.0.0.1:8000";
 
 export async function fetchKPIs(): Promise<KPISummary> {
@@ -146,4 +146,60 @@ export async function runScenario(input: ScenarioInput): Promise<ScenarioResult>
     costImpact,
     affectedSkus,
   };
+}
+
+export async function fetchAuditLogs(): Promise<AuditLogEntry[]> {
+  try {
+    const res = await fetch(`${API_BASE}/audit-log`);
+    if (res.ok) {
+      const data = await res.json();
+      const entries = Array.isArray(data) ? data : (data.entries || []);
+      return entries.map((e: any) => ({
+        id: String(e.id),
+        timestamp: e.timestamp || new Date().toISOString(),
+        actor: e.actor || "System",
+        actorType: e.actor?.toLowerCase().includes("officer") ? "human" : "system",
+        action: e.action || "Action recorded",
+        target: e.target_id || e.target || "N/A",
+        status: e.action?.includes("fail") ? "error" : "success",
+        details: e.details || "",
+      }));
+    }
+  } catch (e) {
+    console.error("fetchAuditLogs failed, returning empty list", e);
+  }
+  return [];
+}
+
+export async function fetchSupplierRisk(): Promise<SupplierRiskItem[]> {
+  try {
+    const [riskRes, trustRes] = await Promise.all([
+      fetch(`${API_BASE}/supplier-risk`),
+      fetch(`${API_BASE}/supplier-trust-scores`),
+    ]);
+    const trustData: { scores: Record<string, number> } = trustRes.ok ? await trustRes.json() : { scores: {} };
+    if (riskRes.ok) {
+      const riskData = await riskRes.json();
+      const suppliers: SupplierRiskItem[] = (riskData.suppliers || []).map((s: any) => ({
+        ...s,
+        trust_score: trustData.scores?.[s.supplier_id] ?? null,
+      }));
+      return suppliers;
+    }
+  } catch (e) {
+    console.error("fetchSupplierRisk failed", e);
+  }
+  return [];
+}
+
+const VOICE_BASE = typeof window !== "undefined" ? "/backend-voice" : "http://127.0.0.1:3001";
+
+export async function fetchCallQuotes(): Promise<CallQuote[]> {
+  try {
+    const res = await fetch(`${VOICE_BASE}/quotes`);
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("fetchCallQuotes failed", e);
+  }
+  return [];
 }

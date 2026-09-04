@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchKPIs, fetchAlerts, fetchInventoryHistory, fetchPOs } from "@/lib/api";
-import { KPISummary, Alert, InventoryPoint, PurchaseOrder, RiskLevel } from "@/types";
+import { fetchKPIs, fetchAlerts, fetchInventoryHistory, fetchPOs, fetchSupplierRisk } from "@/lib/api";
+import { KPISummary, Alert, InventoryPoint, PurchaseOrder, RiskLevel, SupplierRiskItem } from "@/types";
+import { SupplierRiskPanel } from "@/components/SupplierRiskPanel";
 import { useCountUp } from "@/lib/useCountUp";
 import { toast } from "sonner";
 
@@ -106,12 +107,14 @@ export default function DashboardPage() {
   const [selectedSku, setSelectedSku] = useState<string>("SKU-LITH-007");
   const [alertFilter, setAlertFilter] = useState<string>("all");
   const [newAlertIds, setNewAlertIds] = useState<Set<string>>(new Set());
+  const [suppliers, setSuppliers] = useState<SupplierRiskItem[]>([]);
 
   useEffect(() => {
     fetchKPIs().then(setKpis);
     fetchAlerts().then(setAlerts);
     fetchInventoryHistory().then(setHistory);
     fetchPOs().then(setPOs);
+    fetchSupplierRisk().then(setSuppliers);
   }, []);
 
   const chartData = history
@@ -356,6 +359,20 @@ export default function DashboardPage() {
                     <span>Qty: {po.quantity.toLocaleString()}</span>
                     <span>{formatCurrency(po.totalCost)}</span>
                   </div>
+                  {(po.eoq != null || po.safetyStock != null) && (
+                    <div className="mt-2 pt-1 border-t border-border/40 flex items-center justify-between text-[11px]">
+                      {po.eoq != null && (
+                        <span className="font-mono text-blue-600 dark:text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                          EOQ: {po.eoq.toLocaleString()}
+                        </span>
+                      )}
+                      {po.safetyStock != null && (
+                        <span className="font-mono text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded">
+                          SS: {po.safetyStock.toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
             </CardContent>
@@ -438,6 +455,9 @@ export default function DashboardPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Supplier Risk & Trust Scores Grid */}
+      <SupplierRiskPanel suppliers={suppliers} />
 
       {/* Alert Detail Drawer */}
       <Sheet open={!!selectedAlert} onOpenChange={(open) => !open && setSelectedAlert(null)}>

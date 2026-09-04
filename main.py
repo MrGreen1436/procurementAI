@@ -1055,16 +1055,25 @@ def list_pos_frontend():
         price  = first_item.unit_price if first_item else 0.0
 
         inv = MOCK_INVENTORY.get(sku_id)
+        pred_30 = 0
         if inv:
-            pred_30 = 0
             try:
                 pred_30 = get_forecast(sku_id, 30).get("predicted_demand", 0)
             except Exception:
                 pass
             days = int(inv.current_stock / max(1, pred_30 / 30)) if pred_30 > 0 else 999
             risk = "high" if days <= 7 else ("medium" if days <= 20 else "low")
+            reorder_pt = inv.reorder_point
+            safety_stk = int(reorder_pt * 0.42)
+            annual_demand = max(500, pred_30 * 12) if pred_30 > 0 else max(600, qty * 6)
+            order_cost = 50.0
+            holding_cost = max(1.5, float(price) * 0.20)
+            computed_eoq = int((2 * annual_demand * order_cost / holding_cost) ** 0.5)
         else:
             risk = "medium"
+            reorder_pt = 1200
+            safety_stk = 480
+            computed_eoq = qty
 
         sup_name = "Unknown Supplier"
         for sup_list in MOCK_SUPPLIERS.values():
@@ -1081,18 +1090,21 @@ def list_pos_frontend():
         }
 
         result.append({
-            "id":         po.po_id,
-            "sku":        sku_id,
-            "skuName":    sku_id.replace("_", " "),
-            "supplier":   sup_name,
-            "quantity":   qty,
-            "unitCost":   float(price),
-            "totalCost":  float(po.total_cost),
-            "riskLevel":  risk,
-            "status":     status_map.get(po.status, "pending"),
+            "id":           po.po_id,
+            "sku":          sku_id,
+            "skuName":      sku_id.replace("_", " "),
+            "supplier":     sup_name,
+            "quantity":     qty,
+            "unitCost":     float(price),
+            "totalCost":    float(po.total_cost),
+            "riskLevel":    risk,
+            "status":       status_map.get(po.status, "pending"),
+            "eoq":          computed_eoq,
+            "safetyStock":  safety_stk,
+            "reorderPoint": reorder_pt,
             "agentExplanation": {
                 "whySupplier": f"Selected {sup_name} based on highest reliability score.",
-                "whyQuantity": f"Ordered {qty} units to cover 30-day forecasted demand.",
+                "whyQuantity": f"Ordered {qty} units (EOQ: {computed_eoq}) to cover 30-day forecasted demand.",
                 "whyCost":     f"Total cost: ${po.total_cost:.2f}. {'Auto-approved (<$5,000)' if po.total_cost < 5000 else 'Requires approval (>=$5,000)'}.",
             },
             "createdAt": po.created_at.isoformat() if hasattr(po.created_at, 'isoformat') else str(po.created_at),
