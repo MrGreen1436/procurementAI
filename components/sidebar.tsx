@@ -10,22 +10,21 @@ import {
   Activity,
   Menu,
   X,
-  Moon,
-  Sun,
+  Hexagon,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useTheme } from "next-themes";
 
 const NAV_ITEMS = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Chat", href: "/chat", icon: MessageSquare },
   { name: "PO Queue", href: "/po-queue", icon: ClipboardList },
+  { name: "Inventory", href: "/inventory", icon: Package },
   { name: "Simulator", href: "/simulator", icon: Activity },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { setTheme, theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const NavLinks = ({ onNav }: { onNav?: () => void }) => (
@@ -52,24 +51,13 @@ export function Sidebar() {
     </div>
   );
 
-  const ThemeToggle = () => (
-    <button
-      type="button"
-      aria-label="Toggle theme"
-      onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-      className="inline-flex items-center justify-center size-8 rounded-md hover:bg-muted transition-colors"
-    >
-      <Sun className="h-5 w-5 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
-      <Moon className="absolute h-5 w-5 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
-    </button>
-  );
 
   return (
     <>
       {/* ── Mobile top bar ── */}
       <div className="md:hidden flex items-center justify-between p-4 border-b bg-background sticky top-0 z-40">
         <div className="font-bold text-lg flex items-center gap-2">
-          <Activity className="h-6 w-6 text-primary" />
+          <Hexagon className="h-6 w-6 text-primary" />
           ProcureAI
         </div>
         <button
@@ -97,7 +85,7 @@ export function Sidebar() {
           <div className="relative z-50 flex flex-col w-64 bg-background border-r p-4 h-full">
             <div className="flex items-center justify-between mb-6">
               <span className="font-bold text-lg flex items-center gap-2">
-                <Activity className="h-6 w-6 text-primary" />
+                <Hexagon className="h-6 w-6 text-primary" />
                 ProcureAI
               </span>
               <button
@@ -112,26 +100,18 @@ export function Sidebar() {
             <div className="flex-1">
               <NavLinks onNav={() => setMobileOpen(false)} />
             </div>
-            <div className="pt-4 border-t mt-auto flex items-center justify-between">
-              <span className="text-sm text-muted-foreground font-medium">Theme</span>
-              <ThemeToggle />
-            </div>
           </div>
         </div>
       )}
 
       {/* ── Desktop sidebar ── */}
-      <div className="hidden md:flex flex-col w-64 border-r bg-muted/20 min-h-screen p-4 sticky top-0 h-screen">
-        <div className="font-bold text-xl flex items-center gap-2 mb-8 px-2">
-          <Activity className="h-6 w-6 text-primary" />
+      <div className="hidden md:flex flex-col w-64 border-r bg-sidebar min-h-screen p-4 sticky top-0 h-screen">
+        <div className="font-bold font-heading text-xl flex items-center gap-2 mb-8 px-2 text-foreground">
+          <Hexagon className="h-6 w-6 text-primary" />
           ProcureAI
         </div>
         <div className="flex-1">
           <NavLinks />
-        </div>
-        <div className="pt-4 border-t mt-auto flex items-center justify-between px-2">
-          <span className="text-sm text-muted-foreground font-medium">Theme</span>
-          <ThemeToggle />
         </div>
       </div>
     </>

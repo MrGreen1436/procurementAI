@@ -2,10 +2,11 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { fetchKPIs, fetchAlerts, fetchInventoryHistory, fetchPOs } from "@/lib/api";
-import { KPISummary, Alert, InventoryPoint, PurchaseOrder, RiskLevel } from "@/types";
+import { fetchKPIs, fetchAlerts, fetchInventoryHistory, fetchPOs, fetchSupplierRiskPanel, fetchAuditTrail } from "@/lib/api";
+import { KPISummary, Alert, InventoryPoint, PurchaseOrder, RiskLevel, SupplierRisk, AuditLog } from "@/types";
 import { useCountUp } from "@/lib/useCountUp";
 import { toast } from "sonner";
+import { UploadCSVButton } from "@/components/UploadCSVButton";
 
 // shadcn UI
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,7 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 // Lucide
-import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart } from "lucide-react";
+import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Activity } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -46,12 +47,16 @@ function KPICard({
   formatted,
   borderColor,
   icon: Icon,
+  isHero = false,
+  isHighRisk = false,
 }: {
   label: string;
   value: number;
   formatted?: string;
   borderColor: string;
   icon: React.ElementType;
+  isHero?: boolean;
+  isHighRisk?: boolean;
 }) {
   const animated = useCountUp(value, 1200);
   const display = formatted
@@ -62,18 +67,31 @@ function KPICard({
   const currencyAnimated = useCountUp(Math.round(value), 1200);
 
   return (
-    <Card className={cn("border-t-4 shadow-sm", borderColor)}>
-      <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+    <Card className={cn(
+      "shadow-sm transition-all relative overflow-hidden",
+      isHero ? "border-l-4 lg:col-span-2 bg-card/80 border-primary shadow-[0_0_15px_rgba(255,182,39,0.15)]" : cn("border-t-4", borderColor)
+    )}>
+      {isHero && (
+        <div className="absolute inset-0 bg-primary/5 pointer-events-none" />
+      )}
+      <CardHeader className="pb-2 flex flex-row items-center justify-between relative z-10">
+        <CardTitle className={cn(
+          "font-medium", 
+          isHero ? "text-base text-primary/90 font-heading" : "text-sm text-muted-foreground"
+        )}>{label}</CardTitle>
+        <Icon className={cn("h-4 w-4", isHero ? "text-primary/80" : "text-muted-foreground")} />
       </CardHeader>
-      <CardContent>
-        <div className="text-3xl font-bold tabular-nums">
+      <CardContent className="relative z-10">
+        <div className={cn(
+          "font-bold tabular-nums font-heading tracking-tight",
+          isHero ? "text-5xl text-glow-primary text-foreground" : "text-3xl",
+          isHighRisk && !isHero && "text-glow-red text-destructive"
+        )}>
           {formatted
             ? formatCurrency(currencyAnimated)
             : animated}
           {label === "Supplier Risk Score" && (
-            <span className="text-lg text-muted-foreground font-normal">/100</span>
+            <span className={cn("font-normal", isHero ? "text-2xl text-muted-foreground/60 ml-1" : "text-lg text-muted-foreground")}>/100</span>
           )}
         </div>
       </CardContent>
@@ -101,6 +119,8 @@ export default function DashboardPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [history, setHistory] = useState<InventoryPoint[]>([]);
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
+  const [supplierRisks, setSupplierRisks] = useState<SupplierRisk[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
 
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedSku, setSelectedSku] = useState<string>("SKU-LITH-007");
@@ -112,6 +132,8 @@ export default function DashboardPage() {
     fetchAlerts().then(setAlerts);
     fetchInventoryHistory().then(setHistory);
     fetchPOs().then(setPOs);
+    fetchSupplierRiskPanel().then(setSupplierRisks);
+    fetchAuditTrail().then(setAuditLogs);
   }, []);
 
   const chartData = history
@@ -171,12 +193,13 @@ export default function DashboardPage() {
       {/* Header + Demo Buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+          <h1 className="text-4xl font-bold tracking-tight font-heading">Dashboard</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             Real-time supply chain forecasting &amp; risk intelligence
           </p>
         </div>
         <div className="flex gap-2 shrink-0">
+          <UploadCSVButton />
           <button
             id="demo-delay-btn"
             type="button"
@@ -198,14 +221,64 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* KPI Cards with count-up animation */}
+      {/* KPI Cards & Supplier Risk Panel */}
       {kpis && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-5">
+          {/* Supplier Risk Panel (Hero) */}
+          <Card className="col-span-1 sm:col-span-2 lg:col-span-2 shadow-[0_0_15px_rgba(255,182,39,0.15)] border-l-4 border-primary bg-card/80 overflow-hidden relative">
+            <div className="absolute inset-0 bg-primary/5 pointer-events-none" />
+            <CardHeader className="pb-3 relative z-10 border-b border-border/50">
+              <CardTitle className="text-base text-primary/90 font-heading flex items-center justify-between">
+                Supplier Risk Breakdown
+                <Activity className="h-4 w-4 text-primary/80" />
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="relative z-10 p-0">
+              {supplierRisks.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow className="hover:bg-transparent border-b-border/30">
+                      <TableHead className="text-xs">Supplier</TableHead>
+                      <TableHead className="text-xs">Risk</TableHead>
+                      <TableHead className="text-xs text-right">Avg Order</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {supplierRisks.map((s) => (
+                      <TableRow key={s.supplierId} className="border-b-border/30">
+                        <TableCell className="font-medium text-sm">
+                          {s.supplierName}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <div className={cn(
+                              "w-2 h-2 rounded-full",
+                              s.riskPct > 50 ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)]" : s.riskPct > 20 ? "bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.8)]" : "bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"
+                            )} />
+                            <span className="text-xs">{s.riskPct.toFixed(1)}%</span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right text-xs">
+                          {formatCurrency(s.avgOrderAmount)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="p-6 text-sm text-muted-foreground text-center">
+                  No active supplier risks detected.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <KPICard
             label="Stockout Risk Count"
             value={kpis.stockoutRiskCount}
             borderColor={KPI_BORDER.stockout}
             icon={AlertTriangle}
+            isHighRisk={kpis.stockoutRiskCount > 0}
           />
           <KPICard
             label="Excess Inventory Value"
@@ -219,12 +292,6 @@ export default function DashboardPage() {
             value={kpis.openPOCount}
             borderColor={KPI_BORDER.po}
             icon={ShoppingCart}
-          />
-          <KPICard
-            label="Supplier Risk Score"
-            value={kpis.supplierRiskScore}
-            borderColor={KPI_BORDER.supplier}
-            icon={AlertTriangle}
           />
         </div>
       )}
@@ -319,19 +386,25 @@ export default function DashboardPage() {
               <CardTitle className="text-base font-semibold">PO Approval Queue</CardTitle>
             </CardHeader>
             <CardContent className="flex-1 overflow-auto space-y-3">
-              {pos.slice(0, 5).map((po) => (
-                <div key={po.id} className="p-3 border rounded-lg bg-card shadow-sm">
-                  <div className="flex justify-between items-start mb-1.5">
-                    <span className="font-semibold text-sm">{po.sku}</span>
-                    <Badge className={cn("text-xs", riskColorClass(po.riskLevel))}>{po.riskLevel}</Badge>
+              {pos.length > 0 ? (
+                pos.slice(0, 5).map((po) => (
+                  <div key={po.id} className="p-3 border rounded-lg bg-card shadow-sm">
+                    <div className="flex justify-between items-start mb-1.5">
+                      <span className="font-semibold text-sm">{po.sku}</span>
+                      <Badge className={cn("text-xs", riskColorClass(po.riskLevel))}>{po.riskLevel}</Badge>
+                    </div>
+                    <div className="text-xs text-muted-foreground mb-1">Supplier: {po.supplier}</div>
+                    <div className="flex justify-between text-xs font-medium">
+                      <span>Qty: {po.quantity.toLocaleString()}</span>
+                      <span>{formatCurrency(po.totalCost)}</span>
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground mb-1">Supplier: {po.supplier}</div>
-                  <div className="flex justify-between text-xs font-medium">
-                    <span>Qty: {po.quantity.toLocaleString()}</span>
-                    <span>{formatCurrency(po.totalCost)}</span>
-                  </div>
+                ))
+              ) : (
+                <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+                  No pending purchase orders.
                 </div>
-              ))}
+              )}
             </CardContent>
           </Card>
         </div>
@@ -372,44 +445,92 @@ export default function DashboardPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filteredAlerts.map((alert) => (
-                <TableRow
-                  key={alert.id}
-                  className={cn(
-                    "cursor-pointer hover:bg-muted/50 transition-all",
-                    newAlertIds.has(alert.id) &&
-                      "animate-in fade-in-0 slide-in-from-top-2 duration-500 bg-red-500/5"
-                  )}
-                  onClick={() => setSelectedAlert(alert)}
-                >
-                  <TableCell className="font-medium pl-6">
-                    <div>{alert.sku}</div>
-                    <div className="text-xs text-muted-foreground">{alert.skuName}</div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge className={cn("text-xs", riskColorClass(alert.riskLevel))}>
-                      {alert.riskLevel}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    {alert.daysUntilStockout != null ? (
-                      <span className={alert.daysUntilStockout <= 5 ? "text-red-500 font-semibold" : ""}>
-                        {alert.daysUntilStockout} days
-                      </span>
-                    ) : "N/A"}
-                  </TableCell>
-                  <TableCell>
-                    <span>{alert.currentStock.toLocaleString()}</span>
-                    <span className="text-muted-foreground"> / </span>
-                    <span className="text-red-500">{alert.forecastedDemand.toLocaleString()}</span>
-                  </TableCell>
-                  <TableCell className="text-right text-muted-foreground text-xs pr-6">
-                    {new Date(alert.createdAt).toLocaleDateString()}
+              {filteredAlerts.length > 0 ? (
+                filteredAlerts.map((alert) => (
+                  <TableRow
+                    key={alert.id}
+                    className={cn(
+                      "cursor-pointer hover:bg-muted/50 transition-all",
+                      newAlertIds.has(alert.id) &&
+                        "animate-in fade-in-0 slide-in-from-top-2 duration-500 bg-red-500/5"
+                    )}
+                    onClick={() => setSelectedAlert(alert)}
+                  >
+                    <TableCell className="font-medium pl-6">
+                      <div>{alert.sku}</div>
+                      <div className="text-xs text-muted-foreground">{alert.skuName}</div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={cn("text-xs", riskColorClass(alert.riskLevel))}>
+                        {alert.riskLevel}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {alert.daysUntilStockout != null ? (
+                        <span className={alert.daysUntilStockout <= 5 ? "text-glow-red text-destructive font-bold" : ""}>
+                          {alert.daysUntilStockout} days
+                        </span>
+                      ) : "N/A"}
+                    </TableCell>
+                    <TableCell>
+                      <span>{alert.currentStock.toLocaleString()}</span>
+                      <span className="text-muted-foreground"> / </span>
+                      <span className="text-red-500">{alert.forecastedDemand.toLocaleString()}</span>
+                    </TableCell>
+                    <TableCell className="text-right text-muted-foreground text-xs pr-6">
+                      {new Date(alert.createdAt).toLocaleDateString()}
+                    </TableCell>
+                  </TableRow>
+                ))
+              ) : (
+                <TableRow>
+                  <TableCell colSpan={5} className="text-center py-8 text-muted-foreground text-sm">
+                    No active alerts found.
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      {/* Audit Trail Feed */}
+      <Card className="shadow-sm border-t-4 border-t-primary/50">
+        <CardHeader>
+          <CardTitle className="text-base font-semibold font-heading flex items-center gap-2">
+            <Activity className="h-4 w-4 text-primary" />
+            Live Audit Trail
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="h-64 overflow-y-auto">
+            {auditLogs.length > 0 ? (
+              <div className="divide-y divide-border/50">
+                {auditLogs.map((log) => (
+                  <div key={log.id} className="p-4 hover:bg-muted/30 transition-colors flex items-start gap-3">
+                    <div className="mt-1">
+                      <div className="w-2 h-2 rounded-full bg-primary/70 ring-4 ring-primary/10" />
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <p className="text-sm font-medium">
+                        {log.details || `${log.actionType} on ${log.entityType} ${log.entityId}`}
+                      </p>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="font-semibold text-primary/80">{log.performedBy}</span>
+                        <span>•</span>
+                        <span>{new Date(log.createdAt).toLocaleString()}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center h-full text-muted-foreground space-y-2">
+                <Activity className="h-8 w-8 opacity-20" />
+                <p className="text-sm">Awaiting agent activity...</p>
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 

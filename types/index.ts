@@ -59,3 +59,27 @@ export interface ScenarioResult {
   costImpact: number; // USD delta
   affectedSkus: string[];
 }
+
+export interface SupplierRisk {
+  supplierId: string;
+  supplierName: string;
+  riskPct: number;
+  avgOrderAmount: number;
+}
+
+export interface AuditLog {
+  id: number;
+  actionType: string;
+  entityType: string;
+  entityId: string;
+  details: string;
+  performedBy: string;
+  createdAt: string;
+}
+
+export interface CategorySummary {
+  category: string;
+  skuCount: number;
+  atRiskCount: number;
+  totalValue: number;
+}

@@ -5,7 +5,6 @@ import { useSearchParams } from "next/navigation";
 import { queryAgent } from "@/lib/api";
 import { QueryResponse } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
-import { MOCK_QA_PAIRS } from "@/lib/mockData";
 import { Send, RefreshCw, ChevronDown, ChevronUp, ExternalLink, Bot, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +19,12 @@ interface Message {
   loading?: boolean;
 }
 
-const CANNED_QUESTIONS = Object.keys(MOCK_QA_PAIRS);
+const CANNED_QUESTIONS = [
+  "Which SKUs are at highest stockout risk?",
+  "Are there any excess inventory risks this quarter?",
+  "Why did we order more resin pellets this month?",
+  "What is the current risk level for TechCircuits Ltd?"
+];
 
 // Typing indicator component
 function TypingIndicator() {
