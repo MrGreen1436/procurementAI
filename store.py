@@ -100,3 +100,8 @@ RISK_ALERTS: list[RiskAlert] = [
         predicted_stockout_date=date.today() + timedelta(days=4),
     ),
 ]
+
+# ---------------------------------------------------------------
+# Supplier Outreach state (from shashi — tracks live call status)
+# ---------------------------------------------------------------
+SUPPLIER_OUTREACH_DATA: dict = {}

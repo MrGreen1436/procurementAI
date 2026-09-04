@@ -1,9 +1,25 @@
+# Core ML
 pandas
 numpy
 matplotlib
 xgboost
 scikit-learn
-prophet
 statsmodels
-fastapi
-uvicorn
+joblib
+
+# LLM & API
+google-genai
+python-dotenv
+
+# Web framework
+fastapi[all]
+uvicorn[standard]
+
+# Database
+sqlalchemy
+
+# Forecasting
+prophet
+
+# Utils
+python-multipart

@@ -120,8 +120,8 @@ export default function DashboardPage() {
       date: h.date,
       ActualLevel: h.actualLevel,
       ForecastedLevel: h.forecastedLevel,
-    }))
-    .reverse();
+      EtsForecastedLevel: h.etsForecastedLevel,
+    }));
 
   const uniqueSkus = Array.from(new Set(history.map((h) => h.sku)));
 
@@ -322,7 +322,7 @@ export default function DashboardPage() {
                     <Line
                       type="monotone"
                       dataKey="ForecastedLevel"
-                      name="Forecasted Level"
+                      name="XGBoost Forecast"
                       stroke="#94a3b8"
                       strokeWidth={2}
                       strokeDasharray="5 5"
@@ -330,6 +330,18 @@ export default function DashboardPage() {
                       isAnimationActive
                       animationDuration={800}
                       animationBegin={200}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="EtsForecastedLevel"
+                      name="ETS Baseline"
+                      stroke="#f59e0b"
+                      strokeWidth={2}
+                      strokeDasharray="3 3"
+                      dot={false}
+                      isAnimationActive
+                      animationDuration={800}
+                      animationBegin={400}
                     />
                   </LineChart>
                 </ResponsiveContainer>

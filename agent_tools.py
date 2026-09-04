@@ -95,12 +95,27 @@ def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
             preds = _xgboost_model.predict(X)
             total_predicted_demand = int(np.sum(preds))
             
+            # Predict upcoming shortage
+            shortage_date = None
+            shortage_amount = 0
+            inv_item = MOCK_INVENTORY.get(sku_id)
+            if inv_item:
+                current_stock = inv_item.current_stock
+                for i, daily_pred in enumerate(preds):
+                    current_stock -= daily_pred
+                    if current_stock < 0 and shortage_date is None:
+                        shortage_date = future_dates[i]
+                if current_stock < 0:
+                    shortage_amount = int(abs(current_stock))
+            
             result = ForecastResult(
                 sku_id=sku_id,
                 horizon_days=int(horizon_days),
                 predicted_demand=total_predicted_demand,
                 confidence_low=int(total_predicted_demand * 0.85),
                 confidence_high=int(total_predicted_demand * 1.15),
+                projected_shortage_date=shortage_date,
+                projected_shortage_amount=shortage_amount,
             )
             return result.model_dump(mode="json")
         except Exception as e:
@@ -108,12 +123,26 @@ def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
             
     # Fallback if XGBoost fails or not found
     base = 300 if sku_id == "SKU-001" else (150 if sku_id == "SKU-002" else 120)
+    
+    shortage_date = None
+    shortage_amount = 0
+    inv_item = MOCK_INVENTORY.get(sku_id)
+    if inv_item:
+        current_stock = inv_item.current_stock
+        daily_demand = base / max(1, horizon_days)
+        if current_stock < base:
+            days_until_shortage = int(current_stock / daily_demand)
+            shortage_date = date.today() + timedelta(days=days_until_shortage)
+            shortage_amount = int(base - current_stock)
+            
     result = ForecastResult(
         sku_id=sku_id,
         horizon_days=int(horizon_days),
         predicted_demand=base,
         confidence_low=int(base * 0.85),
         confidence_high=int(base * 1.15),
+        projected_shortage_date=shortage_date,
+        projected_shortage_amount=shortage_amount,
     )
     return result.model_dump(mode="json")
 
@@ -234,7 +263,7 @@ ALL_FUNCTION_DECLARATIONS = [
     ),
     genai_types.FunctionDeclaration(
         name="get_forecast",
-        description="Get the demand forecast for a SKU over the next N days.",
+        description="Get the demand forecast for a SKU over the next N days. Also returns the projected shortage date and amount if a stockout is expected.",
         parameters=genai_types.Schema(
             type=genai_types.Type.OBJECT,
             properties={

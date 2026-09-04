@@ -1,4 +1,4 @@
-import { Alert, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult } from "../types";
+import { Alert, EmailParseResult, InventoryPoint, KPISummary, PurchaseOrder, QueryResponse, ScenarioInput, ScenarioResult } from "../types";
 import { MOCK_ALERTS, MOCK_INVENTORY_HISTORY, MOCK_KPIS, MOCK_POS, MOCK_QA_PAIRS } from "./mockData";
 
 // Sleep utility to simulate network latency
@@ -121,25 +121,40 @@ export async function uploadDataset(file: File): Promise<{ success: boolean; mes
 }
 
 export async function runScenario(input: ScenarioInput): Promise<ScenarioResult> {
-  await delay(2000);
+  try {
+    const res = await fetch("http://127.0.0.1:8000/simulate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    if (res.ok) return await res.json();
+  } catch (e) {
+    console.error("Scenario simulation failed:", e);
+  }
 
-  // stockoutIncrease: 0 at baseline/negative, scales up with positive inputs
+  // Fallback mock
   const stockoutIncrease = Math.max(
     0,
-    Math.floor((input.demandIncreasePct / 10) + (input.leadTimeVariabilityPct / 10))
+    Math.floor((input.demand_increase_pct / 10) + (input.lead_time_variability_pct / 10))
   );
-
-  // costImpact can be negative (savings) or positive (additional spend)
-  const costImpact =
-    input.demandIncreasePct * 15000 + input.leadTimeVariabilityPct * 8000;
-
-  // Affected SKUs: empty at baseline/negative; grows 1→2→3 as pressure rises
-  const ALL_AT_RISK = ["SKU-LITH-007", "SKU-PCB-003", "SKU-STL-001"];
+  const costImpact = input.demand_increase_pct * 15000 + input.lead_time_variability_pct * 8000;
+  const ALL_AT_RISK = ["SKU_001", "SKU_003", "SKU_005"];
   const affectedSkus = ALL_AT_RISK.slice(0, stockoutIncrease);
-
   return {
-    newStockoutCount: MOCK_KPIS.stockoutRiskCount + stockoutIncrease,
+    newStockoutCount: stockoutIncrease,
     costImpact,
     affectedSkus,
+    totalShortageUnits: 0,
+    skuDetails: [],
   };
+}
+
+export async function parseEmail(emailText: string): Promise<EmailParseResult> {
+  const res = await fetch("http://127.0.0.1:8000/email/parse", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ raw_email_text: emailText }),
+  });
+  if (!res.ok) throw new Error(`Email parse failed: ${res.status}`);
+  return res.json();
 }

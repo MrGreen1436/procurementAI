@@ -5,20 +5,29 @@ Run with:  uvicorn main:app --reload --port 8000
 Docs:      http://localhost:8000/docs
 
 KEY ARCHITECTURE (for judge Q&A):
-  - store.py        holds all in-memory state (avoids circular imports)
-  - agent_tools.py  defines what the LLM can call (Gemini function calling)
-  - run_agent()     is the agentic loop: high-risk alerts → LLM creates POs
+  - store.py          holds all in-memory state (avoids circular imports)
+  - agent_tools.py    defines what the LLM can call (Gemini function calling)
+  - run_agent()       is the agentic loop: high-risk alerts → LLM creates POs
+  - Decision Engine:  compute_inventory_confidence() → make_procurement_decision()
+                      decides: Use Internal Stock | Verify Manually | Proceed with Procurement
+  - database.py       SQLAlchemy persistence layer (SQLite default, PostgreSQL via env)
+  - simulator.py      What-If scenario engine for supply chain disruption modeling
+  - services/         Supplier Outreach (Vapi/simulated), Enriched Engine, Anomaly Detection
   - Every LLM call has a rule-based fallback so the demo survives API outages
-  - database.py     replaces in-memory dicts with SQLite/Postgres (Task 5)
 """
 
 import os
 import uuid
 import logging
-from datetime import date
+import json
+import re
+import asyncio
+from datetime import date, datetime, timedelta
+from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from google import genai
 from google.genai import types as genai_types
 
@@ -28,12 +37,61 @@ from models import (
     InventoryItem, ForecastResult, Supplier, RiskAlert,
     PurchaseOrder, POLineItem, AgentRunRequest,
     QueryRequest, QueryResponse, EmailParseRequest, EmailParseResult,
+    ScenarioInput, ScenarioResult, SKUShortageDetail, RealtimeEvent,
 )
 from store import MOCK_INVENTORY, MOCK_SUPPLIERS, MOCK_POS, RISK_ALERTS
+from store import SUPPLIER_OUTREACH_DATA
 from agent_tools import (
     dispatch_tool,
     AGENT_TOOL, QUERY_TOOL, EMAIL_TOOL,
+    get_forecast,
 )
+
+# SQLAlchemy persistence (nanditha2)
+from database import (
+    init_db, db_save_po, db_get_all_pos, db_update_po_status,
+    db_save_alert, db_get_all_alerts, db_save_email_log,
+    db_get_email_logs, db_save_scenario_run, db_get_scenario_runs,
+)
+
+# What-If Simulator (nanditha2)
+from simulator import run_what_if_simulation
+
+# Tier-1 enriched engine (shashi)
+try:
+    from services.enriched_engine import (
+        initialise_enriched_engine,
+        compute_inventory_confidence as enriched_confidence,
+        make_procurement_decision as enriched_decision,
+        update_supplier_trust_scores,
+        run_daily_trust_update,
+        check_depletion,
+        compute_depletion_alerts,
+        apply_feedback_safely,
+        SUPPLIER_TRUST_SCORES,
+        ANOMALY_RECORDS,
+        load_anomaly_records,
+    )
+    _ENRICHED_ENGINE_AVAILABLE = True
+except Exception as _ee:
+    _ENRICHED_ENGINE_AVAILABLE = False
+    SUPPLIER_TRUST_SCORES = {}
+    ANOMALY_RECORDS = []
+    logging.getLogger("procurement_agent").warning("Enriched engine unavailable: %s", _ee)
+
+# Supplier Outreach (shashi)
+try:
+    from services.supplier_outreach import (
+        simulate_supplier_call,
+        update_supplier_data,
+        real_supplier_call,
+        USE_REAL_VOICE_CALLS,
+    )
+    _OUTREACH_AVAILABLE = True
+except Exception as _oe:
+    _OUTREACH_AVAILABLE = False
+    logging.getLogger("procurement_agent").warning("Supplier outreach unavailable: %s", _oe)
+
 
 # ---------------------------------------------------------------
 # Logging
@@ -61,27 +119,115 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Procurement Agent API",
-    version="1.0.0",
-    description="AI-powered procurement agent with Gemini function calling.",
+    version="2.0.0",
+    description="AI-powered procurement agent with Gemini function calling, what-if simulator, database persistence, and real-time updates.",
 )
 
-# Add CORS middleware to allow the Next.js frontend to talk to this backend
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://10.152.1.35:3000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+# ---------------------------------------------------------------
+# Real-time WebSocket manager (nanditha2)
+# ---------------------------------------------------------------
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info("WebSocket connected. Active clients: %d", len(self.active_connections))
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, event_type: str, data: dict):
+        payload = json.dumps({
+            "type": event_type,
+            "data": data,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        })
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(payload)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager()
+
+
+def broadcast_sync(event_type: str, data: dict):
+    """Safely trigger broadcast from synchronous route handlers."""
+    try:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            asyncio.create_task(manager.broadcast(event_type, data))
+        else:
+            asyncio.run(manager.broadcast(event_type, data))
+    except Exception as e:
+        logger.debug("Broadcast skipped: %s", e)
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """Real-time bi-directional channel for dashboard live updates."""
+    await manager.connect(websocket)
+    try:
+        await websocket.send_text(json.dumps({
+            "type": "CONNECTED",
+            "data": {"message": "Real-time sync established with Procurement Agent"},
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }))
+        while True:
+            msg = await websocket.receive_text()
+            if msg == "ping":
+                await websocket.send_text(json.dumps({
+                    "type": "PONG",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                }))
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+
+
 @app.on_event("startup")
 async def _startup():
-    """Auto-generate purchase orders from the initial inventory state on startup."""
+    """Initialize DB, auto-generate POs, and load enriched engine."""
+    try:
+        init_db()
+        logger.info("[DB] Database tables initialized")
+    except Exception as exc:
+        logger.warning("[DB] Init skipped: %s", exc)
+
     try:
         _auto_generate_pos_from_inventory()
     except Exception as exc:
         logger.warning("Startup PO generation skipped: %s", exc)
+
+    if _ENRICHED_ENGINE_AVAILABLE:
+        try:
+            initialise_enriched_engine()
+            logger.info("Enriched engine ready — %d supplier trust scores", len(SUPPLIER_TRUST_SCORES))
+        except Exception as exc:
+            logger.warning("Enriched engine init skipped: %s", exc)
 
 
 # ---------------------------------------------------------------
@@ -327,7 +473,7 @@ def get_alerts():
 
 @app.get("/inventory-history")
 def get_inventory_history():
-    """Return last 90 days of actual demand per SKU, plus model forecasts as forecastedLevel."""
+    """Return last 90 days of actual demand per SKU, plus 30 days of future forecasts."""
     import pandas as pd, io
     from agent_tools import _xgboost_model
     from datetime import date, timedelta
@@ -344,15 +490,81 @@ def get_inventory_history():
     cutoff = df["date"].max() - pd.Timedelta(days=90)
     recent = df[df["date"] >= cutoff]
 
+    # Past 90 days
     for _, row in recent.iterrows():
-        # Use actual demand as actualLevel and try to compute a 1-day forecast as forecastedLevel
-        forecasted = float(row["demand"]) * 1.05  # Simple: use 5% above actual as a forecast proxy
         result.append({
             "date":            row["date"].strftime("%Y-%m-%d"),
             "sku":             str(row["sku_id"]),
             "actualLevel":     int(row["demand"]),
-            "forecastedLevel": round(forecasted),
+            "forecastedLevel": int(row["demand"]), # Match actual for history
+            "etsForecastedLevel": int(row["demand"]),
         })
+
+    # Future 30 days
+    if _xgboost_model is not None:
+        from statsmodels.tsa.holtwinters import ExponentialSmoothing
+        import warnings
+        
+        try:
+            expected_features = list(_xgboost_model.feature_names_in_)
+        except AttributeError:
+            expected_features = ['price', 'promotion', 'year', 'month', 'day', 'dayofweek']
+            
+        last_date = df["date"].max()
+        future_dates = [last_date + timedelta(days=i) for i in range(1, 31)]
+        
+        for sku_id in df['sku_id'].unique():
+            sku_data = df[df['sku_id'] == sku_id]
+            last_price = float(sku_data['price'].iloc[-1]) if not sku_data.empty else 150.0
+            
+            # 1. ETS Forecast
+            ets_preds = []
+            if not sku_data.empty:
+                train_series = sku_data.sort_values("date")["demand"].values
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        ets_model = ExponentialSmoothing(
+                            train_series, trend="add", seasonal="add",
+                            seasonal_periods=7, initialization_method="estimated"
+                        ).fit()
+                        ets_preds = np.clip(ets_model.forecast(30), 0, None).tolist()
+                except Exception as e:
+                    print(f"ETS failed for {sku_id}: {e}")
+                    ets_preds = [0] * 30
+            else:
+                ets_preds = [0] * 30
+            
+            # 2. XGBoost Forecast
+            features = pd.DataFrame({'date': future_dates})
+            features['price'] = last_price
+            features['promotion'] = 0
+            features['year'] = features['date'].dt.year
+            features['month'] = features['date'].dt.month
+            features['day'] = features['date'].dt.day
+            features['dayofweek'] = features['date'].dt.dayofweek
+            
+            # Map dynamic SKU features
+            for col in expected_features:
+                if col.startswith('sku_id_'):
+                    expected_sku = col.replace('sku_id_', '')
+                    features[col] = 1 if expected_sku == sku_id else 0
+            
+            for col in expected_features:
+                if col not in features.columns:
+                    features[col] = 0
+                    
+            X = features[expected_features]
+            xgb_preds = _xgboost_model.predict(X)
+            
+            for i, d in enumerate(future_dates):
+                result.append({
+                    "date": d.strftime("%Y-%m-%d"),
+                    "sku": str(sku_id),
+                    "actualLevel": None,
+                    "forecastedLevel": max(0, int(xgb_preds[i])),
+                    "etsForecastedLevel": max(0, int(ets_preds[i]))
+                })
 
     return result
 
@@ -798,7 +1010,7 @@ def parse_email(req: EmailParseRequest):
             summary=f"(fallback) Email parse error: {exc}",
         )
 
-    # Re-trigger agent if we identified a SKU (per Task 4 requirement)
+    # Re-trigger agent if we identified a SKU
     if result.sku_id:
         logger.info("Email parse → re-triggering agent for SKU=%s", result.sku_id)
         try:
@@ -806,7 +1018,114 @@ def parse_email(req: EmailParseRequest):
         except Exception as exc:
             logger.error("Agent re-run after email parse failed: %s", exc)
 
+    # Persist email log to SQLite
+    saved_email = {"id": None}
+    try:
+        saved_email = db_save_email_log(
+            supplier_id=result.supplier_id,
+            sku_id=result.sku_id,
+            delay_days=result.delay_days,
+            summary=result.summary,
+            raw_text=req.raw_email_text,
+        )
+        result = result.model_copy(update={"persisted_email_id": saved_email.get("id")})
+    except Exception as exc:
+        logger.warning("Email log persistence failed: %s", exc)
+
+    # Broadcast real-time event
+    broadcast_sync("EMAIL_PARSED", result.model_dump(mode="json"))
+
     return result
+
+
+# ---------------------------------------------------------------
+# What-If Simulator (nanditha2)
+# ---------------------------------------------------------------
+
+@app.post("/simulate", response_model=ScenarioResult)
+def run_scenario_endpoint(req: ScenarioInput):
+    """
+    Run a what-if scenario simulation across all SKUs.
+    Models the impact of demand spikes, supplier lead-time shocks, or disruptions.
+    """
+    logger.info(
+        "Running what-if: lead_time=%s%%, demand=%s%%",
+        req.lead_time_variability_pct, req.demand_increase_pct
+    )
+    result = run_what_if_simulation(
+        lead_time_variability_pct=req.lead_time_variability_pct,
+        demand_increase_pct=req.demand_increase_pct,
+        disrupted_supplier_id=req.disrupted_supplier_id,
+        extra_delay_days=req.extra_delay_days,
+    )
+
+    # Persist to DB
+    try:
+        db_save_scenario_run(
+            lead_time_pct=req.lead_time_variability_pct,
+            demand_pct=req.demand_increase_pct,
+            result=result,
+        )
+    except Exception as e:
+        logger.warning("Could not persist scenario run to DB: %s", e)
+
+    # Broadcast real-time update
+    broadcast_sync("SCENARIO_RUN", {
+        "leadTimePct": req.lead_time_variability_pct,
+        "demandPct": req.demand_increase_pct,
+        "affectedSkus": result.get("affectedSkus", []),
+        "newStockoutCount": result.get("newStockoutCount", 0),
+    })
+
+    return ScenarioResult(**result)
+
+
+# ---------------------------------------------------------------
+# DB history endpoints
+# ---------------------------------------------------------------
+
+@app.get("/db/email-logs")
+def get_email_logs():
+    """Return all parsed supplier delay emails from persistent storage."""
+    try:
+        return db_get_email_logs()
+    except Exception as exc:
+        logger.error("DB email logs failed: %s", exc)
+        return []
+
+
+@app.get("/db/scenario-runs")
+def get_scenario_runs():
+    """Return historical what-if simulation runs."""
+    try:
+        return db_get_scenario_runs()
+    except Exception as exc:
+        logger.error("DB scenario runs failed: %s", exc)
+        return []
+
+
+# ---------------------------------------------------------------
+# Tier-1 Enriched Engine endpoints (shashi)
+# ---------------------------------------------------------------
+
+@app.get("/trust-scores")
+def get_trust_scores():
+    """Return supplier trust scores from the enriched engine."""
+    if not _ENRICHED_ENGINE_AVAILABLE:
+        return {"error": "Enriched engine not available — enriched CSV not found"}
+    return SUPPLIER_TRUST_SCORES
+
+
+@app.get("/depletion-alerts")
+def get_depletion_alerts():
+    """Return predictive depletion alerts from enriched engine."""
+    if not _ENRICHED_ENGINE_AVAILABLE:
+        return []
+    try:
+        return compute_depletion_alerts()
+    except Exception as exc:
+        logger.error("Depletion alerts failed: %s", exc)
+        return []
 
 
 # ---------------------------------------------------------------
@@ -817,6 +1136,10 @@ def parse_email(req: EmailParseRequest):
 def health():
     return {
         "status": "ok",
+        "version": "2.0.0",
         "llm_mode": "active" if _client else "fallback (no API key)",
         "gemini_model": _GEMINI_MODEL,
+        "enriched_engine": _ENRICHED_ENGINE_AVAILABLE,
+        "outreach_service": _OUTREACH_AVAILABLE,
+        "realtime_clients": len(manager.active_connections),
     }
