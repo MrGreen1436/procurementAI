@@ -8,3 +8,6 @@ statsmodels
 fastapi
 uvicorn
 httpx
+apscheduler
+python-dotenv
+sqlalchemy

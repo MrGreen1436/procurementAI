@@ -67,6 +67,16 @@ from services.enriched_engine import (
 # Audit Trail (Feature 8) — SQLAlchemy/SQLite, additive only
 from database import init_db, log_audit_event
 
+# Feature 9: Automatic Voice Call Triggers (ProcureAI → Twilio Voice)
+from services.call_automation import (
+    maybe_trigger_call_for_decision,
+    run_periodic_price_refresh,
+    setup_periodic_call_scheduler,
+    get_supplier_lookup_from_dataset,
+    get_all_supplier_items_from_dataset,
+    trigger_supplier_call,
+)
+
 # ---------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------
@@ -155,6 +165,13 @@ async def _startup():
                     len(SUPPLIER_TRUST_SCORES), len(ANOMALY_RECORDS))
     except Exception as exc:
         logger.warning("Enriched engine init skipped (enriched CSV not found?): %s", exc)
+
+    # Feature 9: Start BackgroundScheduler for periodic price refresh
+    try:
+        setup_periodic_call_scheduler(get_all_supplier_items_from_dataset)
+        logger.info("[Call Automation] BackgroundScheduler active (24h price staleness check)")
+    except Exception as exc:
+        logger.warning("[Call Automation] Scheduler init skipped: %s", exc)
 
 
 # ---------------------------------------------------------------
@@ -793,6 +810,27 @@ def run_agent(req: AgentRunRequest = AgentRunRequest()):
             confidence_score = 0
             decision_result  = {"decision": "Proceed with Procurement", "severity": "critical"}
             logger.warning("No inventory record for %s — defaulting to Proceed with Procurement", alert.sku_id)
+
+        # ── Trigger 1: Automatic Voice Call Trigger (ProcureAI → Twilio Voice) ──
+        # Fires whenever the Decision Engine outputs "Proceed with Procurement"
+        try:
+            supplier_id_to_call = None
+            if "_erow" in locals() and _erow and _erow.get("supplier_id"):
+                supplier_id_to_call = str(_erow["supplier_id"])
+            elif inv and MOCK_SUPPLIERS.get(alert.sku_id):
+                supplier_id_to_call = MOCK_SUPPLIERS[alert.sku_id][0].supplier_id
+
+            if supplier_id_to_call:
+                sup_lookup = get_supplier_lookup_from_dataset()
+                item_label = f"{alert.sku_id} ({_erow.get('Category', '')})" if ("_erow" in locals() and _erow and _erow.get("Category")) else alert.sku_id
+                maybe_trigger_call_for_decision(
+                    decision=decision_result["decision"],
+                    supplier_id=supplier_id_to_call,
+                    supplier_lookup=sup_lookup,
+                    item_name=item_label,
+                )
+        except Exception as _call_exc:
+            logger.warning("[Call Automation] Automatic call trigger error (non-fatal): %s", _call_exc)
 
         # ── STAGE 2: Branch on Decision Engine outcome ────────────────────
         if decision_result["decision"] == "Use Internal Stock":
@@ -1741,6 +1779,76 @@ Transcript:
         logger.info("[Vapi Webhook] Stored result for call_id=%s", call_id)
 
     return {"status": "ok", "call_id": call_id, "extracted": extracted}
+
+
+# ---------------------------------------------------------------
+# Feature 9: Call Automation Endpoints (Manual Trigger & Testing)
+# ---------------------------------------------------------------
+
+@app.post("/call-automation/trigger")
+def trigger_call_endpoint(
+    supplier_id: str = "SUP-002",
+    item_name: str = "Groceries (P0001)",
+    decision: str = "Proceed with Procurement",
+    supplier_phone: str = None,
+):
+    """
+    Manually invoke Trigger 1 logic (or test forced 'Proceed with Procurement' call).
+    Logs to Audit Trail regardless of call outcome.
+    """
+    lookup = get_supplier_lookup_from_dataset()
+    if supplier_id in lookup and supplier_phone:
+        lookup[supplier_id]["supplier_phone"] = supplier_phone
+    result = maybe_trigger_call_for_decision(
+        decision=decision,
+        supplier_id=supplier_id,
+        supplier_lookup=lookup,
+        item_name=item_name,
+    )
+    return {
+        "status": "triggered" if result else "skipped_or_failed",
+        "decision": decision,
+        "supplier_id": supplier_id,
+        "result": result,
+    }
+
+
+@app.post("/call-automation/periodic-refresh")
+def periodic_refresh_endpoint(
+    staleness_days: int = 0,
+    max_calls: int = 3,
+):
+    """
+    Manually invoke Trigger 2 periodic price staleness refresh.
+    Setting staleness_days=0 flags all items as stale for testing.
+    """
+    import services.call_automation as ca
+    old_threshold = ca.STALENESS_THRESHOLD_DAYS
+    try:
+        ca.STALENESS_THRESHOLD_DAYS = staleness_days
+        items = get_all_supplier_items_from_dataset()
+        results = ca.run_periodic_price_refresh(items, max_calls=max_calls)
+        return {
+            "status": "completed",
+            "threshold_days": staleness_days,
+            "total_items_scanned": len(items),
+            "calls_attempted": len(results),
+            "results": results,
+        }
+    finally:
+        ca.STALENESS_THRESHOLD_DAYS = old_threshold
+
+
+@app.get("/call-automation/status")
+def call_automation_status():
+    """Returns status and configuration of call automation service."""
+    import services.call_automation as ca
+    return {
+        "twilio_service_url": ca.TWILIO_SERVICE_URL,
+        "staleness_threshold_days": ca.STALENESS_THRESHOLD_DAYS,
+        "demo_verified_phone_configured": bool(ca.DEMO_VERIFIED_PHONE),
+        "scheduler_running": True,
+    }
 
 
 # ---------------------------------------------------------------

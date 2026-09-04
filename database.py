@@ -99,11 +99,18 @@ def get_db():
         db.close()
 
 
+def get_db_session() -> Session:
+    """Return a standalone DB session. Caller must close it or use with context."""
+    return SessionLocal()
+
+
 def log_audit_event(
-    action: str,
-    target_id: str,
+    action: str = None,
+    target_id: str = None,
     actor: str = "system",
     details: str = "",
+    db: Session = None,
+    **kwargs,
 ) -> AuditLog:
     """
     Write one immutable row to the audit_log table.
@@ -114,6 +121,7 @@ def log_audit_event(
     target_id : Primary key of the affected record (anomaly key, PO ID, etc.).
     actor     : Who triggered the event (default "system").
     details   : Optional JSON string or free text with extra context.
+    db        : Optional existing Session. If None, a new SessionLocal is used and closed.
 
     Returns the AuditLog ORM row (already committed).
     Never raises — exceptions are caught and logged so a DB hiccup
@@ -121,23 +129,34 @@ def log_audit_event(
     """
     import logging as _logging
     _log = _logging.getLogger("audit")
-    db = SessionLocal()
+    
+    act = action or kwargs.get("action", "unknown")
+    actr = actor or kwargs.get("actor", "system")
+    tgt = target_id or kwargs.get("target_id", "")
+    dtl = details or kwargs.get("details", "")
+
+    should_close = False
+    if db is None:
+        db = SessionLocal()
+        should_close = True
     try:
         entry = AuditLog(
             timestamp=datetime.utcnow(),
-            action=action,
-            actor=actor,
-            target_id=target_id,
-            details=details,
+            action=act,
+            actor=actr,
+            target_id=tgt,
+            details=dtl,
         )
         db.add(entry)
         db.commit()
         db.refresh(entry)
-        _log.info("[Audit] %s | actor=%s | target=%s | %s", action, actor, target_id, details[:120])
+        _log.info("[Audit] %s | actor=%s | target=%s | %s", act, actr, tgt, str(dtl)[:120])
         return entry
     except Exception as exc:
         _log.error("[Audit] Failed to write audit row: %s", exc)
         db.rollback()
         return None
     finally:
-        db.close()
+        if should_close:
+            db.close()
+
