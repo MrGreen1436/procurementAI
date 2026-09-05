@@ -1,7 +1,7 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
-import { parseSupplierEmail } from "@/lib/api";
+import { parseEmail } from "@/lib/api";
 import {
   Dialog,
   DialogContent,
@@ -69,7 +69,7 @@ export function EmailParserModal({ onEmailParsed, trigger }: EmailParserModalPro
     }
     setLoading(true);
     try {
-      const res = await parseSupplierEmail(emailText);
+      const res = await parseEmail(emailText);
       setParsedResult(res);
       toast.success("Delay Email Processed!", {
         description: `Saved supplier-delay record #${res.persisted_email_id}. Extracted ${res.delay_days}d delay for ${res.sku_id || "SKU"}.`,

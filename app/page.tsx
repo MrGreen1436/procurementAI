@@ -12,13 +12,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { reportMarketEvent } from "@/lib/api";
+
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // Recharts
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 // Lucide
-import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Database } from "lucide-react";
+import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Database, X, Zap } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -98,6 +101,12 @@ export default function DashboardPage() {
   const router = useRouter();
 
   const [kpis, setKpis] = useState<KPISummary | null>(null);
+  
+  // Market Event state
+  const [eventModalOpen, setEventModalOpen] = useState(false);
+  const [eventText, setEventText] = useState("");
+  const [isReportingEvent, setIsReportingEvent] = useState(false);
+  const [activeMarketEvent, setActiveMarketEvent] = useState<any>(null);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [history, setHistory] = useState<InventoryPoint[]>([]);
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
@@ -247,8 +256,58 @@ export default function DashboardPage() {
     }
   };
 
+
+  const handleReportEvent = async () => {
+    if (!eventText) return;
+    setIsReportingEvent(true);
+    try {
+      await reportMarketEvent(eventText);
+      toast.success("Event reported successfully", { description: "The system is analyzing the impact." });
+      setEventModalOpen(false);
+      setEventText("");
+    } catch (e) {
+      toast.error("Failed to report event");
+    } finally {
+      setIsReportingEvent(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+
+      {/* Market Event Banner */}
+      {activeMarketEvent && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-start justify-between">
+          <div className="flex gap-3">
+            <div className="mt-0.5 bg-red-500/20 p-2 rounded-full text-red-500">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-red-500 text-base">Market Shock Detected: {activeMarketEvent.summary?.severity?.toUpperCase()} Severity</h3>
+              <p className="text-sm text-foreground mt-1">
+                {activeMarketEvent.summary?.event_text}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                {activeMarketEvent.affected_skus?.length > 0 && (
+                  <Badge variant="outline" className="border-red-500/50 text-red-500">Affected SKUs: {activeMarketEvent.affected_skus.length}</Badge>
+                )}
+                {activeMarketEvent.affected_pos?.length > 0 && (
+                  <Badge variant="outline" className="border-red-500/50 text-red-500">Price Adjusted POs: {activeMarketEvent.affected_pos.length}</Badge>
+                )}
+                {activeMarketEvent.auto_call_triggered && (
+                  <Badge variant="outline" className="bg-red-500 text-white border-transparent">Supplier Call Triggered</Badge>
+                )}
+                {activeMarketEvent.transfer_suggestions?.length > 0 && (
+                  <Badge variant="outline" className="border-emerald-500/50 text-emerald-500">Transfers Available</Badge>
+                )}
+              </div>
+            </div>
+          </div>
+          <button onClick={() => setActiveMarketEvent(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       {/* Header + Demo Buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -268,6 +327,14 @@ export default function DashboardPage() {
             Import / Sync Data
             <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleUploadDataset} />
           </label>
+          <button
+            type="button"
+            onClick={() => setEventModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-xs font-semibold px-3 py-2 transition-colors"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            Report Event
+          </button>
           <button
             id="demo-delay-btn"
             type="button"
@@ -345,7 +412,7 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Date Range Select */}
-                <Select value={dateRange} onValueChange={setDateRange}>
+                <Select value={dateRange} onValueChange={(val) => setDateRange(val || '')}>
                   <SelectTrigger className="h-8 w-24 text-xs">
                     <SelectValue placeholder="Range" />
                   </SelectTrigger>
@@ -360,7 +427,7 @@ export default function DashboardPage() {
                 <div className="w-36">
                   <Select value={selectedSku || "ALL"} onValueChange={(val) => { if (val) setSelectedSku(val); }}>
                     <SelectTrigger className="h-8 text-xs">
-                      <SelectValue placeholder="Select SKU" />
+                      <SelectValue placeholder="Select Material" />
                     </SelectTrigger>
                     <SelectContent>
                       {uniqueSkus.map((sku) => (
@@ -524,7 +591,7 @@ export default function DashboardPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="pl-6">SKU</TableHead>
+                <TableHead className="pl-6">Material</TableHead>
                 <TableHead>Risk Level</TableHead>
                 <TableHead>Days to Stockout</TableHead>
                 <TableHead>Current vs Forecast</TableHead>
@@ -617,6 +684,32 @@ export default function DashboardPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Report Event Modal */}
+      <Dialog open={eventModalOpen} onOpenChange={setEventModalOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Report Market Event</DialogTitle>
+            <DialogDescription>
+              Describe a supply chain shock (e.g., "Steel prices surged 20% due to tariffs"). The AI will parse this and adjust inventory and POs accordingly.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <textarea 
+              value={eventText}
+              onChange={(e) => setEventText(e.target.value)}
+              className="w-full h-24 p-3 rounded-md border bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+              placeholder="e.g. Lumber prices dropped 5%..."
+            />
+          </div>
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setEventModalOpen(false)} className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+            <button onClick={handleReportEvent} disabled={isReportingEvent || !eventText} className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md disabled:opacity-50">
+              {isReportingEvent ? "Analyzing..." : "Submit Event"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -107,7 +107,7 @@ app.post('/make-call', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 function forwardQuoteToBackend({ callSid, skuId, supplierName, price, transcription, status = 'completed', availability = 'in_stock' }) {
   try {
-    const http = require('http');
+    
     const syncData = JSON.stringify({
       call_sid:        callSid,
       sku_id:          skuId,
@@ -117,9 +117,13 @@ function forwardQuoteToBackend({ callSid, skuId, supplierName, price, transcript
       status:          status,
       availability:    availability
     });
-    const syncReq = http.request({
-      hostname: '127.0.0.1',
-      port: 8000,
+    const backendUrl = process.env.BACKEND_API_URL || 'http://127.0.0.1:8000';
+    const parsedUrl = new URL(backendUrl);
+    const protocol = parsedUrl.protocol === 'https:' ? require('https') : require('http');
+    
+    const syncReq = protocol.request({
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
       path: '/internal/supplier-call-quote',
       method: 'POST',
       headers: {

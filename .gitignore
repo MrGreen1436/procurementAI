@@ -13,3 +13,5 @@ procurement.db
 cloudflared.exe
 twillio-voice/
 twilio-voice/node_modules/
+.cursor/
+*.log

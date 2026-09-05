@@ -1,4 +1,4 @@
-﻿"""
+"""
 services/enriched_engine.py
 ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
 All 5 Tier-1 features wired to the REAL columns in
@@ -34,9 +34,15 @@ logger = logging.getLogger("enriched_engine")
 # ---------------------------------------------------------------------------
 # Dataset loader
 # ---------------------------------------------------------------------------
+# The canonical CSV path. If it doesn't exist yet we automatically convert
+# the xlsx sibling file and save the csv for subsequent fast loads.
 _ENRICHED_CSV = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "retail_store_inventory_enriched.csv",
+)
+_ENRICHED_XLSX = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "retail_store_inventory_enriched.xlsx",
 )
 
 _df_cache: Optional[pd.DataFrame] = None
@@ -46,26 +52,52 @@ def _load_enriched(csv_path: str = _ENRICHED_CSV) -> pd.DataFrame:
     """
     Load (and cache) the enriched dataset.
     Parses Date column and sorts chronologically.
+
+    Resolution order:
+      1. Use cached in-memory DataFrame if already loaded.
+      2. Read from csv_path if that file exists (fast path).
+      3. Fall back to the .xlsx sibling (retail_store_inventory_enriched.xlsx)
+         and write a .csv copy so future starts use the fast path.
     """
     global _df_cache
     if _df_cache is not None:
         return _df_cache
 
-    if not os.path.exists(csv_path):
+    # ── Derive xlsx path from csv_path (replace extension) ──────────────────
+    xlsx_path = os.path.splitext(csv_path)[0] + ".xlsx"
+
+    if os.path.exists(csv_path):
+        # Fast path: csv already exists
+        logger.info("Loading enriched dataset from CSV: %s ...", csv_path)
+        with open(csv_path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        df = pd.read_csv(io.StringIO(raw))
+
+    elif os.path.exists(xlsx_path):
+        # Fallback: read xlsx and save a csv copy for future starts
+        logger.info(
+            "CSV not found — reading xlsx and writing csv cache: %s → %s",
+            xlsx_path, csv_path,
+        )
+        df = pd.read_excel(xlsx_path, engine="openpyxl")
+        try:
+            df.to_csv(csv_path, index=False)
+            logger.info("CSV cache written to %s", csv_path)
+        except Exception as csv_write_err:
+            logger.warning("Could not write csv cache: %s", csv_write_err)
+
+    else:
         raise FileNotFoundError(
-            f"Enriched dataset not found at {csv_path}. "
-            "Copy retail_store_inventory_enriched.csv to the project root."
+            f"Enriched dataset not found. Looked for:\n"
+            f"  CSV:  {csv_path}\n"
+            f"  XLSX: {xlsx_path}\n"
+            "Place retail_store_inventory_enriched.xlsx (or .csv) in the project root."
         )
 
-    logger.info("Loading enriched dataset from %s ...", csv_path)
-    with open(csv_path, "r", encoding="utf-8") as fh:
-        raw = fh.read()
-
-    df = pd.read_csv(io.StringIO(raw))
     df["Date"] = pd.to_datetime(df["Date"])
     df = df.sort_values("Date").reset_index(drop=True)
 
-    # Ensure boolean dtype for is_anomaly (CSV may store True/False as strings)
+    # Ensure boolean dtype for is_anomaly (xlsx may store as int 0/1)
     if "is_anomaly" in df.columns:
         df["is_anomaly"] = df["is_anomaly"].astype(bool)
 

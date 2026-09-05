@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RealtimeStatusBadge } from "@/components/RealtimeStatusBadge";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 /* ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 const formatCurrency = (val: number) =>
@@ -240,7 +241,82 @@ function ResultsPanel({
   );
 }
 
-/* ΓöÇΓöÇΓöÇ Page ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
+function ForecastChart({ result }: { result: ScenarioResult }) {
+  const details = result.skuDetails ?? [];
+  const [skuId, setSkuId] = useState(details[0]?.sku_id ?? "");
+  const selected = details.find((d) => d.sku_id === skuId) ?? details[0];
+  const baseline = selected?.baselineForecasts;
+  const simulated = selected?.simulatedForecasts;
+
+  const chartData = (baseline?.xgboost ?? []).map((point, index) => ({
+    date: point.date,
+    baselineXgboost: point.value,
+    baselineLstm: baseline?.lstm?.[index]?.value,
+    baselineEts: baseline?.ets?.[index]?.value,
+    simulatedXgboost: simulated?.xgboost?.[index]?.value,
+    simulatedLstm: simulated?.lstm?.[index]?.value,
+    simulatedEts: simulated?.ets?.[index]?.value,
+  }));
+
+  if (!selected || chartData.length === 0) {
+    return null;
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <CardTitle className="text-sm font-semibold">Demand forecast series</CardTitle>
+          <select
+            aria-label="SKU for forecast chart"
+            className="h-8 rounded-md border border-border bg-background px-2 text-xs"
+            value={selected.sku_id}
+            onChange={(e) => setSkuId(e.target.value)}
+          >
+            {details.map((row) => (
+              <option key={row.sku_id} value={row.sku_id}>
+                {row.sku_id}
+              </option>
+            ))}
+          </select>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="h-72 w-full mt-2">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="currentColor" className="text-border/30" />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 11, fill: "currentColor" }}
+                tickFormatter={(val) => (val ? String(val).split("-").slice(1).join("/") : "")}
+                axisLine={false}
+                tickLine={false}
+                minTickGap={15}
+              />
+              <YAxis
+                tick={{ fontSize: 11, fill: "currentColor" }}
+                axisLine={false}
+                tickLine={false}
+                domain={["auto", "auto"]}
+              />
+              <Tooltip />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line type="monotone" dataKey="baselineXgboost" name="Baseline XGBoost" stroke="#3b82f6" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="baselineLstm" name="Baseline LSTM" stroke="#8b5cf6" strokeWidth={2} strokeDasharray="4 4" dot={false} />
+              <Line type="monotone" dataKey="baselineEts" name="Baseline ETS" stroke="#f59e0b" strokeWidth={2} strokeDasharray="3 3" dot={false} />
+              <Line type="monotone" dataKey="simulatedXgboost" name="Scenario XGBoost" stroke="#ef4444" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="simulatedLstm" name="Scenario LSTM" stroke="#ec4899" strokeWidth={2} strokeDasharray="4 4" dot={false} />
+              <Line type="monotone" dataKey="simulatedEts" name="Scenario ETS" stroke="#10b981" strokeWidth={2} strokeDasharray="3 3" dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* Page */
 const DEFAULT_INPUT: ScenarioInput = {
   leadTimeVariabilityPct: 0,
   demandIncreasePct: 0,
@@ -260,6 +336,29 @@ export default function SimulatorPage() {
     try {
       const res = await runScenario(input);
       setResult(res);
+      // #region agent log
+      const first = res.skuDetails?.[0];
+      fetch("http://127.0.0.1:7826/ingest/7e6d229c-03a8-4613-a906-799d2b370297", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "222ffb" },
+        body: JSON.stringify({
+          sessionId: "222ffb",
+          runId: "post-fix",
+          hypothesisId: "B,C",
+          location: "app/simulator/page.tsx:handleRun",
+          message: "simulate response chart fields",
+          data: {
+            skuCount: res.skuDetails?.length ?? 0,
+            keys: first ? Object.keys(first) : [],
+            xgbN: first?.baselineForecasts?.xgboost?.length ?? 0,
+            lstmN: first?.baselineForecasts?.lstm?.length ?? 0,
+            etsN: first?.baselineForecasts?.ets?.length ?? 0,
+            simXgbN: first?.simulatedForecasts?.xgboost?.length ?? 0,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
     } catch {
       setResult(null);
       setError("Unable to run the backend scenario. Start the FastAPI service and try again.");
@@ -280,7 +379,7 @@ export default function SimulatorPage() {
     input.demandIncreasePct !== DEFAULT_INPUT.demandIncreasePct;
 
   return (
-    <div className="space-y-6 max-w-3xl">
+    <div className="space-y-6 max-w-5xl">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -383,7 +482,10 @@ export default function SimulatorPage() {
       )}
 
       {!loading && result && (
-        <ResultsPanel result={result} baseline={6} />
+        <div className="space-y-4">
+          <ResultsPanel result={result} baseline={6} />
+          <ForecastChart result={result} />
+        </div>
       )}
 
       {!loading && error && (

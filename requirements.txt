@@ -28,3 +28,7 @@ prophet
 
 # Utils
 python-multipart
+
+# Telephony & HTTP client
+twilio
+httpx

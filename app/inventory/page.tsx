@@ -7,6 +7,7 @@ import {
   adjustStock,
   fetchInventoryStatus,
   resetInventoryDataset,
+  fetchWarehouses,
 } from "@/lib/api";
 import { CategorySummary, InventoryRow, InventoryDatasetStatus } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,6 +30,7 @@ import {
   Layers,
   Database,
   Search,
+  Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -55,6 +57,9 @@ export default function InventoryPage() {
   
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [selectedWarehouse, setSelectedWarehouse] = useState<string | null>(null);
 
   // Form state for manual adjustment
   const [storeId, setStoreId] = useState("");
@@ -65,14 +70,16 @@ export default function InventoryPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [dsStatus, summary, txList] = await Promise.all([
+      const [dsStatus, summary, txList, whList] = await Promise.all([
         fetchInventoryStatus(),
-        getInventoryCategorySummary(),
-        fetchInventoryTransactions(),
+        getInventoryCategorySummary(selectedWarehouse || undefined),
+        fetchInventoryTransactions(selectedCategory || undefined, selectedWarehouse || undefined),
+        fetchWarehouses(),
       ]);
       setStatus(dsStatus);
       setCategories(summary);
       setTransactions(txList);
+      setWarehouses(whList);
     } catch (err) {
       console.error("Error loading inventory:", err);
     } finally {
@@ -82,7 +89,7 @@ export default function InventoryPage() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [selectedWarehouse, selectedCategory]);
 
   const handleAdjustStock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -160,15 +167,15 @@ export default function InventoryPage() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b">
         <div>
           <div className="flex items-center gap-2">
-            <h1 className="text-3xl font-bold tracking-tight">Inventory Registry</h1>
+            <h1 className="text-3xl font-bold tracking-tight">Materials Inventory</h1>
             <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-full">
               <Database className="h-3 w-3" /> Live Database ({status.row_count ? status.row_count.toLocaleString() : "Connected"})
             </span>
           </div>
           <p className="text-sm text-muted-foreground mt-0.5">
             {selectedCategory
-              ? `Viewing SKUs and stock records in ${selectedCategory}`
-              : "Explore SKU registry, real-time category risk, and stock reconciliations powered by database"}
+              ? `Viewing Materials and stock records in ${selectedCategory}`
+              : "Explore Materials registry, real-time category risk, and stock reconciliations powered by database"}
           </p>
         </div>
 
@@ -196,7 +203,7 @@ export default function InventoryPage() {
             <div className="text-2xl font-bold mt-1 text-foreground">{categories.length}</div>
           </Card>
           <Card className="p-4 shadow-sm border bg-card/60 backdrop-blur-sm">
-            <div className="text-xs font-medium text-muted-foreground">Monitored SKUs</div>
+            <div className="text-xs font-medium text-muted-foreground">Monitored Materials</div>
             <div className="text-2xl font-bold mt-1 text-blue-400">{totalSKUs}</div>
           </Card>
           <Card className="p-4 shadow-sm border bg-card/60 backdrop-blur-sm">
@@ -207,6 +214,58 @@ export default function InventoryPage() {
             <div className="text-xs font-medium text-muted-foreground">Total Stock Value</div>
             <div className="text-2xl font-bold mt-1 text-emerald-400">{formatCurrency(totalValuation)}</div>
           </Card>
+        </div>
+      )}
+
+      {/* ── Warehouse Cards ── */}
+      {warehouses.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-primary" />
+              Project Sites / Warehouses
+            </h2>
+            {selectedWarehouse && (
+              <button
+                onClick={() => setSelectedWarehouse(null)}
+                className="text-xs text-primary hover:underline"
+              >
+                Clear filter
+              </button>
+            )}
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-thin">
+            {warehouses.map((wh) => (
+              <Card
+                key={wh.store_id}
+                onClick={() => setSelectedWarehouse(wh.store_id)}
+                className={cn(
+                  "cursor-pointer shrink-0 w-64 p-4 shadow-sm transition-all border-l-4",
+                  selectedWarehouse === wh.store_id ? "ring-2 ring-primary/50" : "hover:bg-card/60",
+                  wh.status === "healthy" ? "border-l-emerald-500" :
+                  wh.status === "at_risk" ? "border-l-yellow-500" : "border-l-red-500"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-bold text-base truncate">{wh.store_id}</div>
+                  <Badge
+                    variant={wh.status === "healthy" ? "default" : wh.status === "at_risk" ? "secondary" : "destructive"}
+                    className={cn(
+                      "text-[10px] px-1.5 py-0",
+                      wh.status === "healthy" && "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20",
+                      wh.status === "at_risk" && "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20",
+                    )}
+                  >
+                    {wh.status === "healthy" ? "Healthy" : wh.status === "at_risk" ? "At Risk" : "Critical"}
+                  </Badge>
+                </div>
+                <div className="mt-3 flex justify-between text-xs text-muted-foreground">
+                  <span>{wh.total_skus} Materials</span>
+                  <span>{wh.low_stock_count} Low Stock</span>
+                </div>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
 
@@ -273,7 +332,7 @@ export default function InventoryPage() {
                   </CardHeader>
                   <CardContent className="space-y-3 relative z-10 pt-1">
                     <div className="flex justify-between items-center text-xs">
-                      <span className="text-muted-foreground">Total SKUs</span>
+                      <span className="text-muted-foreground">Total Materials</span>
                       <span className="font-semibold text-foreground">{cat.skuCount}</span>
                     </div>
                     <div className="flex justify-between items-center text-xs">
@@ -319,7 +378,7 @@ export default function InventoryPage() {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Filter by SKU, store, region…"
+                placeholder="Filter by Material, project site, region…"
                 className="w-full pl-8 pr-3 py-1.5 text-xs bg-background border rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/40"
               />
             </div>
@@ -332,7 +391,7 @@ export default function InventoryPage() {
                 <CardHeader className="pb-3 border-b bg-card">
                   <div className="flex items-center justify-between">
                     <div>
-                      <CardTitle className="text-base font-semibold">{selectedCategory} SKU Records</CardTitle>
+                      <CardTitle className="text-base font-semibold">{selectedCategory} Material Records</CardTitle>
                       <p className="text-xs text-muted-foreground mt-0.5">
                         Showing {filteredTransactions.length} dynamic stock records
                       </p>
@@ -350,8 +409,8 @@ export default function InventoryPage() {
                         <TableHeader className="bg-muted/40 sticky top-0 z-30 shadow-sm">
                           <TableRow className="border-b">
                             <TableHead className="sticky left-0 bg-muted/95 z-30 pl-6 min-w-[120px]">Date</TableHead>
-                            <TableHead className="sticky left-[120px] bg-muted/95 z-30 min-w-[100px]">Store</TableHead>
-                            <TableHead className="sticky left-[220px] bg-muted/95 z-30 min-w-[130px] border-r">SKU</TableHead>
+                            <TableHead className="sticky left-[120px] bg-muted/95 z-30 min-w-[100px]">Project Site</TableHead>
+                            <TableHead className="sticky left-[220px] bg-muted/95 z-30 min-w-[130px] border-r">Material</TableHead>
                             <TableHead className="min-w-[100px]">Region</TableHead>
                             <TableHead className="text-right min-w-[110px]">Inventory</TableHead>
                             <TableHead className="text-right min-w-[110px]">Reorder</TableHead>
@@ -439,7 +498,7 @@ export default function InventoryPage() {
                 <CardContent>
                   <form onSubmit={handleAdjustStock} className="space-y-3.5">
                     <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-muted-foreground">Store / Site ID</label>
+                      <label className="text-xs font-semibold text-muted-foreground">Project Site ID</label>
                       <input
                         type="text"
                         required
@@ -450,14 +509,14 @@ export default function InventoryPage() {
                       />
                     </div>
                     <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-muted-foreground">Product ID / SKU</label>
+                      <label className="text-xs font-semibold text-muted-foreground">Product ID / Material</label>
                       <input
                         type="text"
                         required
                         value={productId}
                         onChange={(e) => setProductId(e.target.value)}
                         className="w-full bg-background border rounded-lg px-3 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary/40"
-                        placeholder="e.g. P0001 or SKU-001"
+                        placeholder="e.g. P0001 or MAT-001"
                       />
                     </div>
                     <div className="space-y-1.5">

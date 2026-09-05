@@ -62,13 +62,19 @@ class POLineItem(BaseModel):
     sku_id: str
     quantity: int
     unit_price: float
+    subtotal: float = 0.0          # quantity × unit_price (pre-tax)
+    tax_rate: float = 0.18         # GST / VAT rate applied to this line
+    tax_amount: float = 0.0        # subtotal × tax_rate
 
 
 class PurchaseOrder(BaseModel):
     po_id: str
     supplier_id: str
     items: list[POLineItem]
-    total_cost: float
+    subtotal: float = 0.0          # sum of all line subtotals (pre-tax)
+    tax_rate: float = 0.18         # blended tax rate applied to the order
+    tax_amount: float = 0.0        # subtotal × tax_rate
+    total_cost: float              # final payable amount = subtotal + tax_amount
     reasoning: str
     status: Literal["auto_approved", "pending_approval", "rejected"]
     generated_by: str = "llm"
@@ -117,6 +123,17 @@ class ScenarioInput(BaseModel):
     extra_delay_days: Optional[int] = None
 
 
+class ForecastPoint(BaseModel):
+    date: str
+    value: float
+
+
+class ForecastSeriesBundle(BaseModel):
+    xgboost: list[ForecastPoint] = Field(default_factory=list)
+    lstm: list[ForecastPoint] = Field(default_factory=list)
+    ets: list[ForecastPoint] = Field(default_factory=list)
+
+
 class SKUShortageDetail(BaseModel):
     sku_id: str
     baseline_inventory: float
@@ -125,6 +142,8 @@ class SKUShortageDetail(BaseModel):
     shortage_units: float
     shortage_cost: float
     recommended_action: str
+    baselineForecasts: ForecastSeriesBundle = Field(default_factory=ForecastSeriesBundle)
+    simulatedForecasts: ForecastSeriesBundle = Field(default_factory=ForecastSeriesBundle)
 
 
 class ScenarioResult(BaseModel):

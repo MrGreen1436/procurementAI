@@ -23,7 +23,7 @@ const NAV_ITEMS = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Chat", href: "/chat", icon: MessageSquare },
   { name: "PO Queue", href: "/po-queue", icon: ClipboardList },
-  { name: "Inventory", href: "/inventory", icon: Package },
+  { name: "Materials Inventory", href: "/inventory", icon: Package },
   { name: "Simulator", href: "/simulator", icon: Activity },
   { name: "Supplier Calls", href: "/outreach", icon: PhoneCall },
   { name: "Audit Trail", href: "/audit-trail", icon: ShieldCheck },

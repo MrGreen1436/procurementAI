@@ -142,8 +142,22 @@ class AuditLogDB(Base):
     created_at  = Column(DateTime, default=datetime.utcnow, index=True)
 
 
+
+class MarketEventDB(Base):
+    __tablename__ = "market_events"
+
+    id                   = Column(Integer, primary_key=True, autoincrement=True)
+    event_text           = Column(Text, nullable=False)
+    affected_category    = Column(String, nullable=True)
+    affected_sku_id      = Column(String, nullable=True)
+    price_delta_pct      = Column(Float, nullable=False)
+    lead_time_delta_days = Column(Integer, nullable=False)
+    severity             = Column(String, nullable=False)   # low, medium, high
+    created_at           = Column(DateTime, default=datetime.utcnow)
+
 # ---------------------------------------------------------------
 # Lifecycle Helpers & Dependency
+
 # ---------------------------------------------------------------
 
 def init_db():
@@ -694,12 +708,12 @@ def db_get_inventory_count() -> int:
         db.close()
 
 
-def db_get_inventory_summary() -> List[dict]:
+def db_get_inventory_summary(site_id: str = None) -> List[dict]:
     """
     Compute CategorySummary[] directly from the latest inventory state in the database.
     Returns: [{category, skuCount, atRiskCount, totalValue}, ...]
     """
-    sku_map = db_get_sku_state_map()
+    sku_map = db_get_sku_state_map(site_id)
     if not sku_map:
         return []
 
@@ -726,7 +740,7 @@ def db_get_inventory_summary() -> List[dict]:
     return sorted(list(cat_map.values()), key=lambda x: x["category"])
 
 
-def db_get_inventory_transactions(category: Optional[str] = None, limit: int = 300, offset: int = 0) -> List[dict]:
+def db_get_inventory_transactions(category: Optional[str] = None, site_id: Optional[str] = None, limit: int = 300, offset: int = 0) -> List[dict]:
     """Retrieve paginated inventory transaction records directly from DB."""
     db = SessionLocal()
     try:
@@ -734,6 +748,8 @@ def db_get_inventory_transactions(category: Optional[str] = None, limit: int = 3
         q = db.query(InventoryRecordDB)
         if category and category.lower() != "all":
             q = q.filter(func.lower(InventoryRecordDB.category) == category.lower())
+        if site_id:
+            q = q.filter(InventoryRecordDB.store_id == site_id)
         
         rows = q.order_by(desc(InventoryRecordDB.id)).offset(offset).limit(limit).all()
         return [
@@ -969,7 +985,7 @@ def db_seed_if_empty():
         return False
 
 
-def db_get_sku_state_map() -> Dict[str, dict]:
+def db_get_sku_state_map(site_id: str = None) -> Dict[str, dict]:
     """
     Query distinct SKUs from the database and aggregate stock, reorder point,
     pricing, and supplier info.
@@ -978,20 +994,26 @@ def db_get_sku_state_map() -> Dict[str, dict]:
     db = SessionLocal()
     try:
         from sqlalchemy import func, distinct
-        skus = [r[0] for r in db.query(distinct(InventoryRecordDB.sku_id)).all()]
+        q = db.query(distinct(InventoryRecordDB.sku_id))
+        if site_id:
+            q = q.filter(InventoryRecordDB.store_id == site_id)
+        skus = [r[0] for r in q.all()]
         if not skus:
             return {}
 
         result = {}
         for sku in skus:
-            latest = db.query(InventoryRecordDB).filter(InventoryRecordDB.sku_id == sku).order_by(desc(InventoryRecordDB.id)).first()
+            q_latest = db.query(InventoryRecordDB).filter(InventoryRecordDB.sku_id == sku)
+            if site_id:
+                q_latest = q_latest.filter(InventoryRecordDB.store_id == site_id)
+            latest = q_latest.order_by(desc(InventoryRecordDB.id)).first()
             if not latest:
                 continue
 
-            avg_stats = db.query(
-                func.avg(InventoryRecordDB.price),
-                func.avg(InventoryRecordDB.demand)
-            ).filter(InventoryRecordDB.sku_id == sku).first()
+            q_stats = db.query(func.avg(InventoryRecordDB.price), func.avg(InventoryRecordDB.demand)).filter(InventoryRecordDB.sku_id == sku)
+            if site_id:
+                q_stats = q_stats.filter(InventoryRecordDB.store_id == site_id)
+            avg_stats = q_stats.first()
 
             avg_price = round(float(avg_stats[0] or 100.0), 2)
             avg_demand = max(1.0, float(avg_stats[1] or 10.0))
@@ -1338,6 +1360,267 @@ def db_seed_audit_logs_if_empty():
     finally:
         db.close()
 
+# ---------------------------------------------------------------
+# Project Budget Table & Functions
+# ---------------------------------------------------------------
+
+class ProjectBudgetDB(Base):
+    __tablename__ = "project_budgets"
+
+    project_id       = Column(String, primary_key=True, index=True)
+    allocated_budget = Column(Float, nullable=False)
+    spent_amount     = Column(Float, nullable=False, default=0.0)
+    remaining_budget = Column(Float, nullable=False)
+    updated_at       = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+def db_get_budget(project_id: str) -> Optional[dict]:
+    """Return the budget row for a project as a dict, or None if not found."""
+    db = SessionLocal()
+    try:
+        row = db.query(ProjectBudgetDB).filter(ProjectBudgetDB.project_id == project_id).first()
+        if row is None:
+            return None
+        return {
+            "project_id":       row.project_id,
+            "allocated_budget": row.allocated_budget,
+            "spent_amount":     row.spent_amount,
+            "remaining_budget": row.remaining_budget,
+            "updated_at":       row.updated_at.isoformat() if row.updated_at else None,
+        }
+    finally:
+        db.close()
+
+
+def db_set_budget(project_id: str, allocated_budget: float) -> dict:
+    """Create or update the budget row for a project.
+    Sets remaining_budget = allocated_budget - spent_amount.
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(ProjectBudgetDB).filter(ProjectBudgetDB.project_id == project_id).first()
+        if row is None:
+            row = ProjectBudgetDB(
+                project_id=project_id,
+                allocated_budget=allocated_budget,
+                spent_amount=0.0,
+                remaining_budget=allocated_budget,
+                updated_at=datetime.utcnow(),
+            )
+            db.add(row)
+        else:
+            row.allocated_budget = allocated_budget
+            row.remaining_budget = allocated_budget - row.spent_amount
+            row.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(row)
+        return {
+            "project_id":       row.project_id,
+            "allocated_budget": row.allocated_budget,
+            "spent_amount":     row.spent_amount,
+            "remaining_budget": row.remaining_budget,
+            "updated_at":       row.updated_at.isoformat() if row.updated_at else None,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error("[DB] db_set_budget failed: %s", e)
+        raise
+    finally:
+        db.close()
+
+
+def db_deduct_budget(project_id: str, amount: float) -> dict:
+    """Subtract amount from remaining_budget and add it to spent_amount, then commit.
+    Raises ValueError if the project budget row does not exist.
+    """
+    db = SessionLocal()
+    try:
+        row = db.query(ProjectBudgetDB).filter(ProjectBudgetDB.project_id == project_id).first()
+        if row is None:
+            raise ValueError(f"No budget found for project_id='{project_id}'")
+        row.spent_amount     += amount
+        row.remaining_budget -= amount
+        row.updated_at        = datetime.utcnow()
+        db.commit()
+        db.refresh(row)
+        return {
+            "project_id":       row.project_id,
+            "allocated_budget": row.allocated_budget,
+            "spent_amount":     row.spent_amount,
+            "remaining_budget": row.remaining_budget,
+            "updated_at":       row.updated_at.isoformat() if row.updated_at else None,
+        }
+    except Exception as e:
+        db.rollback()
+        logger.error("[DB] db_deduct_budget failed: %s", e)
+        raise
+    finally:
+        db.close()
 
 
 
+def db_get_warehouses_summary() -> list[dict]:
+    with SessionLocal() as db:
+        # We want to group by store_id and compute total_skus, low_stock_count, and status
+        # Since we have multiple records for the same SKU over time, we should look at the LATEST date per SKU per store.
+        
+        # Subquery to get the latest record ID for each SKU in each store
+        subq = db.query(
+            InventoryRecordDB.store_id,
+            InventoryRecordDB.sku_id,
+            func.max(InventoryRecordDB.date).label("max_date")
+        ).group_by(InventoryRecordDB.store_id, InventoryRecordDB.sku_id).subquery()
+
+        # Join to get the actual records
+        records = db.query(InventoryRecordDB).join(
+            subq,
+            (InventoryRecordDB.store_id == subq.c.store_id) &
+            (InventoryRecordDB.sku_id == subq.c.sku_id) &
+            (InventoryRecordDB.date == subq.c.max_date)
+        ).all()
+        
+        store_map = {}
+        for r in records:
+            if r.store_id not in store_map:
+                store_map[r.store_id] = {"total_skus": 0, "low_stock_count": 0}
+            store_map[r.store_id]["total_skus"] += 1
+            if r.inventory_level < r.reorder_level:
+                store_map[r.store_id]["low_stock_count"] += 1
+                
+        results = []
+        for store_id, data in store_map.items():
+            st = "healthy"
+            if data["low_stock_count"] > 0:
+                if data["low_stock_count"] < 0.2 * data["total_skus"]:
+                    st = "at_risk"
+                else:
+                    st = "critical"
+            results.append({
+                "store_id": store_id,
+                "total_skus": data["total_skus"],
+                "low_stock_count": data["low_stock_count"],
+                "status": st
+            })
+        return results
+
+def db_save_market_event(event_data: dict) -> dict:
+    with SessionLocal() as db:
+        evt = MarketEventDB(**event_data)
+        db.add(evt)
+        db.commit()
+        db.refresh(evt)
+        return {
+            "id": evt.id,
+            "event_text": evt.event_text,
+            "affected_category": evt.affected_category,
+            "affected_sku_id": evt.affected_sku_id,
+            "price_delta_pct": evt.price_delta_pct,
+            "lead_time_delta_days": evt.lead_time_delta_days,
+            "severity": evt.severity,
+        }
+
+def db_update_inventory_price(sku_id: str, category: str, price_delta_pct: float) -> list[str]:
+    # Update latest inventory records with the new price
+    affected_skus = []
+    with SessionLocal() as db:
+        query = db.query(InventoryRecordDB)
+        if sku_id:
+            query = query.filter(InventoryRecordDB.sku_id == sku_id)
+        elif category:
+            query = query.filter(InventoryRecordDB.category == category)
+            
+        # Get distinct SKUs
+        distinct_skus = {r.sku_id for r in query.all()}
+        affected_skus = list(distinct_skus)
+        
+        # Subquery to update only the latest record for each SKU
+        for sku in affected_skus:
+            latest = db.query(InventoryRecordDB).filter(InventoryRecordDB.sku_id == sku).order_by(desc(InventoryRecordDB.date)).first()
+            if latest:
+                old_price = latest.price
+                new_price = old_price * (1.0 + price_delta_pct / 100.0)
+                latest.price = new_price
+        db.commit()
+    return affected_skus
+
+def db_find_transfer_candidates(sku_id: str, needed_qty: int) -> list[dict]:
+    with SessionLocal() as db:
+        # Find latest records for this sku
+        subq = db.query(
+            InventoryRecordDB.store_id,
+            func.max(InventoryRecordDB.date).label("max_date")
+        ).filter(InventoryRecordDB.sku_id == sku_id).group_by(InventoryRecordDB.store_id).subquery()
+        
+        records = db.query(InventoryRecordDB).join(
+            subq,
+            (InventoryRecordDB.store_id == subq.c.store_id) &
+            (InventoryRecordDB.date == subq.c.max_date)
+        ).filter(InventoryRecordDB.sku_id == sku_id).all()
+        
+        candidates = []
+        for r in records:
+            surplus = r.inventory_level - r.reorder_level
+            if surplus > needed_qty:
+                candidates.append({
+                    "store_id": r.store_id,
+                    "surplus": surplus,
+                    "available_qty": r.inventory_level
+                })
+        # Sort by most surplus
+        candidates.sort(key=lambda x: x["surplus"], reverse=True)
+        return candidates
+
+def db_recalculate_po_costs(affected_skus: list[str], price_delta_pct: float) -> list[dict]:
+    # Find pending_approval or auto_approved POs referencing affected_skus, recompute total_cost, check budget
+    updated_pos = []
+    with SessionLocal() as db:
+        pos = db.query(PurchaseOrderDB).filter(PurchaseOrderDB.status.in_(["pending_approval", "auto_approved"])).all()
+        for po in pos:
+            items = po.items
+            changed = False
+            new_subtotal = 0.0
+            
+            for item in items:
+                if item.get("sku_id") in affected_skus:
+                    item["unit_price"] = item["unit_price"] * (1.0 + price_delta_pct / 100.0)
+                    changed = True
+                new_subtotal += item["unit_price"] * item["quantity"]
+                
+            if changed:
+                po.items = items
+                # Recompute total
+                old_total = po.total_cost
+                new_tax_amount = new_subtotal * 0.18
+                new_total = new_subtotal + new_tax_amount
+                
+                po.total_cost = new_total
+                
+                # We need to get budget to see if it exceeds. The PO doesn't store project_id directly, 
+                # but we can look up project_id by checking budget table? Actually, we'd need to just use site_id if it's there.
+                # In agent_tools, it uses project_id or site_id. 
+                # For simplicity, we just pass back the PO details so the caller can handle it, or handle it here if budget is globally easy.
+                # We'll just return the POs that changed.
+                
+                updated_pos.append({
+                    "po_id": po.po_id,
+                    "old_total": old_total,
+                    "new_total": new_total,
+                    "status": po.status,
+                    "reasoning": po.reasoning
+                })
+                # Commit updates to items and total_cost temporarily
+                # The caller will handle the budget check and status update.
+        db.commit()
+    return updated_pos
+
+def db_update_po_status_and_reason(po_id: str, new_status: str, appended_reason: str):
+    with SessionLocal() as db:
+        po = db.query(PurchaseOrderDB).filter(PurchaseOrderDB.po_id == po_id).first()
+        if po:
+            po.status = new_status
+            if appended_reason not in po.reasoning:
+                po.reasoning = po.reasoning + appended_reason
+            db.commit()
+
+# =========================================================
+# (End of new functions)

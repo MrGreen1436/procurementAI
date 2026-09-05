@@ -91,13 +91,16 @@ function POCard({
       )}
     >
       <CardHeader className="pb-3">
-        {/* Top row: SKU + risk badge + status */}
+        {/* Top row: Material + risk badge + status */}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="font-semibold text-sm truncate">{po.sku}</div>
             <div className="text-xs text-muted-foreground mt-0.5">{po.skuName}</div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {po.reasoning?.includes("PRICE ADJUSTED DUE TO EVENT") && (
+              <Badge variant="destructive" className="text-[10px] px-1.5 py-0">Price Adjusted</Badge>
+            )}
             <Badge className={cn("text-xs", risk.badge)}>{po.riskLevel}</Badge>
             <StatusIcon className={cn("h-4 w-4", status.className)} />
           </div>
@@ -106,7 +109,7 @@ function POCard({
 
       <CardContent className="space-y-4 pt-0">
         {/* Metadata grid */}
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
               <Building2 className="h-3 w-3" /> Supplier
@@ -119,11 +122,25 @@ function POCard({
             </div>
             <span className="text-sm font-medium">{po.quantity.toLocaleString()}</span>
           </div>
-          <div className="flex flex-col gap-1">
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <DollarSign className="h-3 w-3" /> Total Cost
-            </div>
-            <span className="text-sm font-medium">{formatCurrency(po.totalCost, 2)}</span>
+        </div>
+
+        {/* Cost breakdown */}
+        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span className="flex items-center gap-1"><DollarSign className="h-3 w-3" /> Subtotal</span>
+            <span className="tabular-nums font-medium text-foreground">
+              {formatCurrency((po as any).subtotal ?? po.totalCost / 1.18, 2)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Tax (18%)</span>
+            <span className="tabular-nums font-medium text-foreground">
+              {formatCurrency((po as any).taxAmount ?? po.totalCost - po.totalCost / 1.18, 2)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-xs border-t border-border/50 pt-1 mt-1">
+            <span className="font-semibold text-foreground">Total</span>
+            <span className="tabular-nums font-bold text-foreground">{formatCurrency(po.totalCost, 2)}</span>
           </div>
         </div>
 
@@ -172,23 +189,31 @@ function POCard({
 
         {/* Approve / Reject buttons — only shown for pending POs */}
         {isPending && (
-          <div className="flex gap-2 pt-1">
-            <button
-              type="button"
-              id={`approve-${po.id}`}
-              onClick={() => onApprove(po.id)}
-              className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium py-2 px-3 transition-colors"
-            >
-              <Check className="h-4 w-4" /> Approve
-            </button>
-            <button
-              type="button"
-              id={`reject-${po.id}`}
-              onClick={() => onReject(po.id)}
-              className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-medium py-2 px-3 transition-colors"
-            >
-              <X className="h-4 w-4" /> Reject
-            </button>
+          <div className="space-y-2 pt-1">
+            {po.reasoning?.includes("BUDGET EXCEEDED") && (
+              <div className="flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-500 text-xs font-semibold">
+                <span className="inline-block h-1.5 w-1.5 rounded-full bg-red-500" />
+                Over Budget — manual approval required
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                id={`approve-${po.id}`}
+                onClick={() => onApprove(po.id)}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium py-2 px-3 transition-colors"
+              >
+                <Check className="h-4 w-4" /> Approve
+              </button>
+              <button
+                type="button"
+                id={`reject-${po.id}`}
+                onClick={() => onReject(po.id)}
+                className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-medium py-2 px-3 transition-colors"
+              >
+                <X className="h-4 w-4" /> Reject
+              </button>
+            </div>
           </div>
         )}
 
@@ -196,13 +221,18 @@ function POCard({
         {!isPending && (
           <div
             className={cn(
-              "text-center text-sm font-semibold py-2 rounded-lg",
+              "text-center text-sm font-semibold py-2 rounded-lg flex items-center justify-center gap-2",
               po.status === "approved"
                 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                 : "bg-red-500/10 text-red-600 dark:text-red-400"
             )}
           >
             {po.status === "approved" ? "✓ Approved" : "✕ Rejected"}
+            {po.reasoning?.includes("BUDGET EXCEEDED") && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold bg-red-500 text-white px-2 py-0.5 rounded-full">
+                Over Budget
+              </span>
+            )}
           </div>
         )}
       </CardContent>

@@ -68,7 +68,7 @@ def place_twilio_call(sku_id: str, supplier_name: str, reason: str) -> dict:
         return {"error": "twilio package not installed. Run: pip install twilio"}
 
     # Build URL for webhook (preferred, works on Twilio trial accounts via Cloudflare tunnel)
-    public_url = os.environ.get("PUBLIC_URL", "").strip()
+    public_url = os.environ.get("PUBLIC_WEBHOOK_BASE_URL", os.environ.get("PUBLIC_URL", "")).strip()
 
     try:
         client = Client(cfg["account_sid"], cfg["auth_token"])

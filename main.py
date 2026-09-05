@@ -32,6 +32,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on system environment variables
 
 from typing import Optional
+from pydantic import BaseModel
 
 import importlib
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, UploadFile, File
@@ -64,6 +65,7 @@ from database import (
     db_seed_if_empty, db_get_sku_state_map, db_get_sku_demand_history,
     db_get_inventory_history_timeline, db_get_latest_supplier_quote,
     db_log_audit_event, db_get_audit_logs, db_seed_audit_logs_if_empty,
+    db_get_budget, db_set_budget, db_deduct_budget,
 )
 
 # What-If Simulator (nanditha2)
@@ -2393,6 +2395,21 @@ def run_scenario_endpoint(req: ScenarioInput):
     except Exception as ae:
         logger.warning("[Audit] Failed to log scenario run: %s", ae)
 
+    # #region agent log
+    try:
+        import json as _json
+        from pathlib import Path as _P
+        _first = (result.get("skuDetails") or [{}])[0]
+        _payload = ScenarioResult(**result)
+        _dumped = _payload.model_dump()
+        _dfirst = (_dumped.get("skuDetails") or [{}])[0]
+        _log = {"sessionId": "222ffb", "runId": "post-fix", "hypothesisId": "B", "location": "main.py:run_scenario_endpoint", "message": "pydantic strip check", "data": {"engine_keys": list(_first.keys()) if isinstance(_first, dict) else [], "response_keys": list(_dfirst.keys()) if isinstance(_dfirst, dict) else [], "engine_has_forecasts": "baselineForecasts" in (_first or {}), "response_has_forecasts": "baselineForecasts" in (_dfirst or {})}, "timestamp": __import__("time").time() * 1000}
+        with open(_P(__file__).resolve().parent / "debug-222ffb.log", "a", encoding="utf-8") as _f:
+            _f.write(_json.dumps(_log) + "\n")
+        return _payload
+    except Exception:
+        pass
+    # #endregion
     return ScenarioResult(**result)
 
 
@@ -2445,6 +2462,33 @@ def get_depletion_alerts():
 
 
 # ---------------------------------------------------------------
+# Project Budget endpoints
+# ---------------------------------------------------------------
+
+class BudgetSetRequest(BaseModel):
+    project_id: str
+    allocated_budget: float
+
+
+@app.get("/api/budget/{project_id}")
+def get_budget(project_id: str):
+    """Return the budget row for a project (404 if not found)."""
+    row = db_get_budget(project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No budget found for project_id='{project_id}'")
+    return row
+
+
+@app.post("/api/budget")
+def set_budget(body: BudgetSetRequest):
+    """Create or update the budget for a project.
+    Sets remaining_budget = allocated_budget - spent_amount.
+    """
+    updated = db_set_budget(body.project_id, body.allocated_budget)
+    return updated
+
+
+# ---------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------
 
@@ -2459,3 +2503,40 @@ def health():
         "outreach_service": _OUTREACH_AVAILABLE,
         "realtime_clients": len(manager.active_connections),
     }
+
+from pydantic import BaseModel
+class MarketEventRequest(BaseModel):
+    event_text: str
+
+@app.post("/events/report")
+def report_event_endpoint(req: MarketEventRequest):
+    """
+    Process a reported market event (e.g. news, raw text).
+    Extracts structured data, creates MarketEventDB record,
+    re-calculates affected POs, triggers Twilio calls if needed,
+    and broadcasts to WebSocket.
+    """
+    from services.market_events import process_market_event
+    try:
+        logger.info(f"Received market event report: {req.event_text}")
+        result = process_market_event(req.event_text)
+        
+        # Broadcast to any active websockets
+        broadcast_sync("MARKET_EVENT_DETECTED", result)
+        
+        return {"status": "success", "data": result}
+    except Exception as e:
+        logger.error(f"Error processing market event: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+@app.get("/api/warehouses")
+def get_warehouses_endpoint():
+    """
+    Returns warehouse summary rolled up by store_id.
+    """
+    try:
+        from database import db_get_warehouses_summary
+        return db_get_warehouses_summary()
+    except Exception as e:
+        logger.error(f"Error fetching warehouses: {e}", exc_info=True)
+        return []
