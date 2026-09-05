@@ -13,7 +13,7 @@ HOW IT WORKS:
 import uuid
 import logging
 from datetime import date
-from typing import Any
+from typing import Any, Optional
 
 from google import genai
 from google.genai import types as genai_types
@@ -26,8 +26,10 @@ from store import MOCK_INVENTORY, MOCK_SUPPLIERS, MOCK_POS, RISK_ALERTS
 
 logger = logging.getLogger(__name__)
 # Tool implementation functions
-def get_inventory(sku_id: str) -> dict:
-    """Return current inventory for a SKU."""
+def get_inventory(sku_id: Optional[str] = None) -> dict:
+    """Return current inventory for a SKU, or all items if sku_id is omitted."""
+    if not sku_id:
+        return {"inventory": [item.model_dump(mode="json") for item in MOCK_INVENTORY.values()]}
     item = MOCK_INVENTORY.get(sku_id)
     if not item:
         return {"error": f"No inventory record for SKU '{sku_id}'"}
@@ -294,8 +296,14 @@ def get_forecast(sku_id: str, horizon_days: int = 30) -> dict:
 
 
 
-def get_suppliers(sku_id: str) -> dict:
-    """Return all suppliers available for a SKU."""
+def get_suppliers(sku_id: Optional[str] = None) -> dict:
+    """Return all suppliers available for a SKU, or all suppliers if sku_id is omitted."""
+    if not sku_id:
+        seen = {}
+        for s_list in MOCK_SUPPLIERS.values():
+            for s in s_list:
+                seen[s.supplier_id] = s.model_dump(mode="json")
+        return {"suppliers": list(seen.values())}
     suppliers = MOCK_SUPPLIERS.get(sku_id, [])
     if not suppliers:
         return {"suppliers": [], "message": f"No suppliers found for SKU '{sku_id}'"}
@@ -319,38 +327,110 @@ def get_risk_alerts(risk_level: str = None) -> dict:
     return {"alerts": [a.model_dump(mode="json") for a in alerts]}
 
 
-def create_purchase_order(items: list, supplier_id: str, reasoning: str) -> dict:
+def create_purchase_order(items: list, supplier_id: str, reasoning: str,
+                          site_id: str = "") -> dict:
     """
     Construct, validate, and store a new Purchase Order.
 
-    Business rule (enforced in Python — NOT left to the LLM):
-      total_cost < 5_000  → status = "auto_approved"
-      total_cost >= 5_000 → status = "pending_approval"
+    Cost breakdown (18 % GST):
+      line.subtotal   = quantity × unit_price
+      line.tax_amount = subtotal × 0.18
+      po.subtotal     = sum of line subtotals
+      po.tax_amount   = po.subtotal × 0.18
+      po.total_cost   = po.subtotal + po.tax_amount  ← final payable
+
+    Budget-enforcement gate (runs BEFORE auto-approve logic):
+      If a ProjectBudgetDB row exists for site_id (or supplier_id as fallback)
+      and total_cost > remaining_budget → force "pending_approval".
+      If auto_approved → deduct total_cost from the budget row.
+
+    Threshold rule (only applies when budget is NOT exceeded):
+      total_cost < 5,000  → "auto_approved"
+      total_cost ≥ 5,000  → "pending_approval"
     """
+    TAX_RATE = 0.18
+
     try:
-        line_items = [POLineItem(**item) for item in items]
+        line_items: list[POLineItem] = []
+        for item in items:
+            li = POLineItem(**item)
+            li.subtotal   = round(li.quantity * li.unit_price, 2)
+            li.tax_amount = round(li.subtotal * TAX_RATE, 2)
+            line_items.append(li)
     except Exception as exc:
         logger.error("PO line item validation failed: %s", exc)
         return {"error": f"Invalid line items: {exc}"}
 
-    total_cost = sum(i.quantity * i.unit_price for i in line_items)
-    status = "auto_approved" if total_cost < 5_000 else "pending_approval"
+    po_subtotal   = round(sum(li.subtotal for li in line_items), 2)
+    po_tax_amount = round(po_subtotal * TAX_RATE, 2)
+    total_cost    = round(po_subtotal + po_tax_amount, 2)
+
+    # ── Budget-enforcement gate ──────────────────────────────────────────────
+    # Use site_id if given, otherwise fall back to supplier_id as project key
+    budget_key = site_id.strip() if site_id and site_id.strip() else supplier_id
+    budget_exceeded = False
+    try:
+        from database import db_get_budget, db_deduct_budget
+        budget_row = db_get_budget(budget_key)
+        if budget_row is not None and total_cost > budget_row["remaining_budget"]:
+            budget_exceeded = True
+            reasoning = (
+                reasoning
+                + f" | BUDGET EXCEEDED: requires manual approval"
+                  f" (total_cost={total_cost:.2f}, remaining_budget={budget_row['remaining_budget']:.2f})"
+            )
+    except Exception as be:
+        logger.warning("Budget gate check failed (continuing without enforcement): %s", be)
+        budget_row = None
+        budget_exceeded = False
+
+    # ── Status determination ─────────────────────────────────────────────────
+    if budget_exceeded:
+        status = "pending_approval"
+    else:
+        status = "auto_approved" if total_cost < 5_000 else "pending_approval"
+
     po_id = f"PO-{uuid.uuid4().hex[:8].upper()}"
 
     po = PurchaseOrder(
         po_id=po_id,
         supplier_id=supplier_id,
         items=line_items,
-        total_cost=round(total_cost, 2),
+        subtotal=po_subtotal,
+        tax_rate=TAX_RATE,
+        tax_amount=po_tax_amount,
+        total_cost=total_cost,
         reasoning=reasoning,
         status=status,
         generated_by="llm",
         created_at=date.today(),
     )
     MOCK_POS[po_id] = po
+
+    # ── Persist to database ──────────────────────────────────────────────────
+    try:
+        from database import db_save_po
+        po_dict = po.model_dump(mode="json")
+        po_dict["subtotal"]   = po_subtotal
+        po_dict["tax_rate"]   = TAX_RATE
+        po_dict["tax_amount"] = po_tax_amount
+        db_save_po(po_dict)
+    except Exception as dbe:
+        logger.warning("PO DB persist failed (in-memory record kept): %s", dbe)
+
+    # ── Deduct from budget if auto-approved ──────────────────────────────────
+    if status == "auto_approved" and not budget_exceeded:
+        try:
+            from database import db_get_budget, db_deduct_budget
+            if db_get_budget(budget_key) is not None:
+                db_deduct_budget(budget_key, total_cost)
+                logger.info("Budget deducted: project=%s amount=%.2f", budget_key, total_cost)
+        except Exception as bde:
+            logger.warning("Budget deduction failed (non-fatal): %s", bde)
+
     logger.info(
-        "PO created: %s | supplier=%s | total=%.2f | status=%s",
-        po_id, supplier_id, total_cost, status,
+        "PO created: %s | supplier=%s | subtotal=%.2f | tax=%.2f | total=%.2f | status=%s",
+        po_id, supplier_id, po_subtotal, po_tax_amount, total_cost, status,
     )
     return po.model_dump(mode="json")
 
@@ -401,11 +481,11 @@ _line_item_schema = genai_types.Schema(
 ALL_FUNCTION_DECLARATIONS = [
     genai_types.FunctionDeclaration(
         name="get_inventory",
-        description="Get current stock level and reorder point for a SKU.",
+        description="Get current stock level and reorder point. Optionally specify sku_id (e.g. P0001); if omitted, returns all inventory.",
         parameters=genai_types.Schema(
             type=genai_types.Type.OBJECT,
-            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="SKU identifier, e.g. SKU-001")},
-            required=["sku_id"],
+            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="Optional SKU identifier")},
+            required=[],
         ),
     ),
     genai_types.FunctionDeclaration(
@@ -422,11 +502,11 @@ ALL_FUNCTION_DECLARATIONS = [
     ),
     genai_types.FunctionDeclaration(
         name="get_suppliers",
-        description="List suppliers for a SKU with price, lead time, and reliability score.",
+        description="List suppliers with price, lead time, and reliability score. Optionally specify sku_id; if omitted, returns all suppliers.",
         parameters=genai_types.Schema(
             type=genai_types.Type.OBJECT,
-            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="SKU identifier")},
-            required=["sku_id"],
+            properties={"sku_id": genai_types.Schema(type=genai_types.Type.STRING, description="Optional SKU identifier")},
+            required=[],
         ),
     ),
     genai_types.FunctionDeclaration(

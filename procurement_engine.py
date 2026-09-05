@@ -44,13 +44,24 @@ class IndustrialProcurementEngine:
         elif needs_reorder:
             urgency = "MEDIUM"
             
+        TAX_RATE = 0.18
+        subtotal    = float(round(total_procurement_cost, 2))
+        tax_amount  = float(round(subtotal * TAX_RATE, 2))
+        total_cost  = float(round(subtotal + tax_amount, 2))
+
         return {
             "current_inventory": int(current_inventory),
             "reorder_point": int(reorder_point),
             "safety_stock": int(safety_stock),
             "trigger_purchase_order": bool(needs_reorder),
             "recommended_order_quantity": int(recommended_order_qty),
-            "estimated_cost": float(round(total_procurement_cost, 2)),
+            # Itemised cost breakdown
+            "subtotal": subtotal,
+            "tax_rate": TAX_RATE,
+            "tax_amount": tax_amount,
+            "total_cost": total_cost,
+            # Kept for backward-compatibility with callers that read estimated_cost
+            "estimated_cost": total_cost,
             "urgency": str(urgency),
             "total_lead_time_demand": int(total_lead_time_demand)
         }

@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState } from "react";
 import { runScenario } from "@/lib/api";
@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { RealtimeStatusBadge } from "@/components/RealtimeStatusBadge";
+import { ForecastComparisonChart, ForecastComparisonPoint } from "@/components/ForecastComparisonChart";
 
 /* ΓöÇΓöÇΓöÇ Helpers ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ */
 const formatCurrency = (val: number) =>
@@ -136,6 +137,33 @@ function ResultsPanel({
   const costNeutral = result.costImpact === 0;
   const CostIcon = costPositive ? TrendingUp : costNeutral ? Minus : TrendingDown;
 
+  const chartData: ForecastComparisonPoint[] = [];
+  for (const detail of result.skuDetails) {
+    const models = [
+      ["xgboost", "xgboostOriginal", "xgboostSimulated"],
+      ["lstm", "lstmOriginal", "lstmSimulated"],
+      ["ets", "etsOriginal", "etsSimulated"],
+    ] as const;
+    for (const [model, originalKey, simulatedKey] of models) {
+      const original = detail.baselineForecasts?.[model] ?? [];
+      const simulated = detail.simulatedForecasts?.[model] ?? [];
+      original.forEach((point, index) => {
+        const current = chartData[index] ?? {
+          date: point.date,
+          xgboostOriginal: 0,
+          xgboostSimulated: 0,
+          lstmOriginal: 0,
+          lstmSimulated: 0,
+          etsOriginal: 0,
+          etsSimulated: 0,
+        };
+        current[originalKey] += point.value;
+        current[simulatedKey] += simulated[index]?.value ?? 0;
+        chartData[index] = current;
+      });
+    }
+  }
+
   return (
     <div className="space-y-4 animate-in fade-in-0 slide-in-from-bottom-2 duration-300">
       <h2 className="text-lg font-semibold">Scenario Results</h2>
@@ -236,6 +264,21 @@ function ResultsPanel({
           No additional SKUs affected under this scenario
         </div>
       )}
+
+      {/* Forecast Comparison Chart */}
+      <div className="space-y-4">
+        <h2 className="text-lg font-semibold">Forecast Comparison</h2>
+        <Card className="shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm font-semibold">
+              Projected Demand Shift (Original Baseline vs Simulated Disruption)
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ForecastComparisonChart data={chartData} />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

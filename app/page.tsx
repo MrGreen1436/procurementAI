@@ -12,13 +12,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { EmailParserModal } from "@/components/EmailParserModal";
+import { reportMarketEvent } from "@/lib/api";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 // Recharts
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 // Lucide
-import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Database } from "lucide-react";
+import { AlertTriangle, Bot, Mail, TrendingUp, ShoppingCart, Database, X, Zap } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -102,6 +105,13 @@ export default function DashboardPage() {
   const [history, setHistory] = useState<InventoryPoint[]>([]);
   const [pos, setPOs] = useState<PurchaseOrder[]>([]);
 
+  // Market Event state
+  const [eventModalOpen, setEventModalOpen] = useState(false);
+  const [eventText, setEventText] = useState("");
+  const [isReportingEvent, setIsReportingEvent] = useState(false);
+  const [activeMarketEvent, setActiveMarketEvent] = useState<any>(null);
+  const [delayModalOpen, setDelayModalOpen] = useState(false);
+
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
   const [selectedSku, setSelectedSku] = useState<string>("ALL");
   const [alertFilter, setAlertFilter] = useState<string>("all");
@@ -133,7 +143,7 @@ export default function DashboardPage() {
     });
     fetchPOs().then(setPOs);
 
-    // Real-time sync with AI voice calls and PO updates
+    // Real-time sync with AI voice calls, PO updates, and market events
     let ws: WebSocket | null = null;
     try {
       ws = new WebSocket("ws://127.0.0.1:8000/ws");
@@ -141,6 +151,9 @@ export default function DashboardPage() {
         try {
           const msg = JSON.parse(e.data);
           if (msg.type === "PO_UPDATED" || msg.type === "SUPPLIER_CALL_COMPLETED") {
+            fetchPOs().then(setPOs);
+          } else if (msg.type === "MARKET_EVENT_DETECTED") {
+            setActiveMarketEvent(msg.data);
             fetchPOs().then(setPOs);
           }
         } catch {}
@@ -184,23 +197,38 @@ export default function DashboardPage() {
   const filteredAlerts =
     alertFilter === "all" ? alerts : alerts.filter((a) => a.riskLevel === alertFilter);
 
-  /* ── Demo: Simulate Supplier Delay Email ── */
+  /* ── Demo: Simulate Supplier Delay Email & Delivery Impact ── */
   const handleSimulateDelay = () => {
+    setDelayModalOpen(true);
+  };
+
+  const handleDelaySimulated = (simRes: any) => {
+    if (!simRes) return;
     const newAlert: Alert = {
-      ...DELAY_ALERT,
-      id: `demo-${Date.now()}`,
+      id: `delay-${simRes.sku_id}-${Date.now()}`,
+      sku: simRes.sku_id,
+      skuName: simRes.sku_name || simRes.sku_id,
+      riskLevel: "high",
+      daysUntilStockout: simRes.delayed_stockout_day !== null ? simRes.delayed_stockout_day : 3,
+      currentStock: Math.round(simRes.current_stock),
+      forecastedDemand: Math.round(simRes.shortage_units > 0 ? simRes.shortage_units : simRes.daily_demand_avg * 30),
       createdAt: new Date().toISOString(),
     };
     setAlerts((prev) => [newAlert, ...prev]);
     setNewAlertIds((prev) => new Set(prev).add(newAlert.id));
-    setAlertFilter("all"); // show all so the new alert is visible
+    setAlertFilter("all");
+    if (simRes.sku_id) {
+      setSelectedSku(simRes.sku_id);
+    }
 
-    toast.error("⚠️ Supplier Delay Email Received", {
-      description: "WireCo Global reports a 7-day delay on Copper Wire shipments. New high-risk alert added.",
+    toast.error("⚠️ Supplier Delay Processed", {
+      description: `${simRes.supplier_name} reports ${simRes.delay_days}d delay for ${simRes.sku_id}. Impact graph computed.`,
       duration: 5000,
     });
 
-    // Remove fade-in highlight after animation
+    fetchPOs().then(setPOs);
+    fetchKPIs().then(setKpis);
+
     setTimeout(() => {
       setNewAlertIds((prev) => {
         const next = new Set(prev);
@@ -247,8 +275,71 @@ export default function DashboardPage() {
     }
   };
 
+  const handleReportEvent = async () => {
+    if (!eventText) return;
+    setIsReportingEvent(true);
+    try {
+      const res = await reportMarketEvent(eventText);
+      if (res && res.data) {
+        setActiveMarketEvent(res.data);
+      }
+      toast.success("Event reported successfully", { description: "The system analyzed the impact." });
+      setEventModalOpen(false);
+      setEventText("");
+      fetchPOs().then(setPOs);
+    } catch (e) {
+      toast.error("Failed to report event");
+    } finally {
+      setIsReportingEvent(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {/* Market Event Banner */}
+      {activeMarketEvent && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 flex items-start justify-between">
+          <div className="flex gap-3">
+            <div className="mt-0.5 bg-red-500/20 p-2 rounded-full text-red-500">
+              <AlertTriangle className="h-5 w-5" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-red-500 text-base">
+                Market Shock Detected: {activeMarketEvent.summary?.severity?.toUpperCase() || "HIGH"} Severity
+              </h3>
+              <p className="text-sm text-foreground mt-1">
+                {activeMarketEvent.summary?.event_text}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                {activeMarketEvent.affected_skus?.length > 0 && (
+                  <Badge variant="outline" className="border-red-500/50 text-red-500">
+                    Affected Materials: {activeMarketEvent.affected_skus.length}
+                  </Badge>
+                )}
+                {activeMarketEvent.affected_pos?.length > 0 && (
+                  <Badge variant="outline" className="border-red-500/50 text-red-500">
+                    Price Adjusted POs: {activeMarketEvent.affected_pos.length}
+                  </Badge>
+                )}
+                {activeMarketEvent.auto_call_triggered && (
+                  <Badge variant="outline" className="bg-red-500 text-white border-transparent">
+                    Supplier Call Triggered
+                  </Badge>
+                )}
+                {activeMarketEvent.transfer_suggestions?.length > 0 && (
+                  <Badge variant="outline" className="border-emerald-500/50 text-emerald-500">
+                    Surplus Transfers Available: {activeMarketEvent.transfer_suggestions.length}
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </div>
+          <button onClick={() => setActiveMarketEvent(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header + Demo Buttons */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
@@ -268,6 +359,14 @@ export default function DashboardPage() {
             Import / Sync Data
             <input type="file" accept=".csv,.xlsx,.xls" className="hidden" onChange={handleUploadDataset} />
           </label>
+          <button
+            type="button"
+            onClick={() => setEventModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 text-xs font-semibold px-3 py-2 transition-colors"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            Report Event
+          </button>
           <button
             id="demo-delay-btn"
             type="button"
@@ -345,7 +444,7 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Date Range Select */}
-                <Select value={dateRange} onValueChange={setDateRange}>
+                <Select value={dateRange} onValueChange={(val) => { if (val) setDateRange(val); }}>
                   <SelectTrigger className="h-8 w-24 text-xs">
                     <SelectValue placeholder="Range" />
                   </SelectTrigger>
@@ -617,6 +716,39 @@ export default function DashboardPage() {
           )}
         </SheetContent>
       </Sheet>
+
+      {/* Report Event Modal */}
+      <Dialog open={eventModalOpen} onOpenChange={setEventModalOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Report Market Event</DialogTitle>
+            <DialogDescription>
+              Describe a supply chain shock (e.g., "Steel prices surged 20% due to tariffs"). The AI will parse this and adjust inventory and POs accordingly.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <textarea 
+              value={eventText}
+              onChange={(e) => setEventText(e.target.value)}
+              className="w-full h-24 p-3 rounded-md border bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary/50"
+              placeholder="e.g. Lumber prices dropped 5%..."
+            />
+          </div>
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setEventModalOpen(false)} className="px-4 py-2 text-sm text-muted-foreground hover:text-foreground">Cancel</button>
+            <button onClick={handleReportEvent} disabled={isReportingEvent || !eventText} className="px-4 py-2 text-sm bg-primary text-primary-foreground rounded-md disabled:opacity-50">
+              {isReportingEvent ? "Analyzing..." : "Submit Event"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Supplier Delay Simulation Modal with On-Time vs Delayed Delivery Graph */}
+      <EmailParserModal
+        open={delayModalOpen}
+        onOpenChange={setDelayModalOpen}
+        onEmailParsed={handleDelaySimulated}
+      />
     </div>
   );
 }

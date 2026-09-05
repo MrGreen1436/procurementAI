@@ -14,6 +14,7 @@ import os
 MOCK_INVENTORY: dict[str, InventoryItem] = {}
 MOCK_SUPPLIERS: dict[str, list[Supplier]] = {}
 MOCK_POS: dict[str, PurchaseOrder] = {}
+RISK_ALERTS: list[RiskAlert] = []   # populated by load_state_from_db(); empty list is safe default
 
 def load_state_from_csv(csv_path: str = "demand_sample.csv"):
     """

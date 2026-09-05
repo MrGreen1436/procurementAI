@@ -32,6 +32,7 @@ except ImportError:
     pass  # python-dotenv not installed; rely on system environment variables
 
 from typing import Optional
+from pydantic import BaseModel
 
 import importlib
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request, UploadFile, File
@@ -64,6 +65,7 @@ from database import (
     db_seed_if_empty, db_get_sku_state_map, db_get_sku_demand_history,
     db_get_inventory_history_timeline, db_get_latest_supplier_quote,
     db_log_audit_event, db_get_audit_logs, db_seed_audit_logs_if_empty,
+    db_get_budget, db_set_budget, db_deduct_budget, db_get_warehouses_summary,
 )
 
 # What-If Simulator (nanditha2)
@@ -1297,13 +1299,13 @@ def _read_dataset_safe(target_csv: str):
 
 
 @app.get("/api/inventory/summary")
-def get_inventory_summary():
+def get_inventory_summary(site_id: str = None):
     """
     Return CategorySummary[] computed directly from the SQL database in sub-milliseconds.
     If no dataset has been uploaded, returns [] (strictly NO hardcoded values).
     """
     # 1. Primary: Direct high-speed SQL aggregate
-    db_summary = db_get_inventory_summary()
+    db_summary = db_get_inventory_summary(site_id=site_id)
     if db_summary:
         return db_summary
 
@@ -1397,7 +1399,7 @@ def get_inventory_summary():
 
 
 @app.get("/api/inventory/transactions")
-def get_inventory_transactions(category: str = None, limit: int = 300, offset: int = 0):
+def get_inventory_transactions(category: str = None, site_id: str = None, limit: int = 300, offset: int = 0):
     """
     Return detailed InventoryRow[] from the SQL database with sub-millisecond indexed speed.
     If no dataset has been uploaded, returns [] (strictly NO hardcoded values).
@@ -1406,10 +1408,12 @@ def get_inventory_transactions(category: str = None, limit: int = 300, offset: i
     for adj in reversed(_MANUAL_INVENTORY_ADJUSTMENTS):
         if category and adj.get("category") and adj["category"].lower() != category.lower():
             continue
+        if site_id and adj.get("store_id") and adj["store_id"].lower() != site_id.lower():
+            continue
         adj_rows.append(adj)
 
     # 1. Primary: Direct high-speed SQL query
-    db_rows = db_get_inventory_transactions(category=category, limit=limit, offset=offset)
+    db_rows = db_get_inventory_transactions(category=category, site_id=site_id, limit=limit, offset=offset)
     if db_rows or db_get_inventory_count() > 0:
         return adj_rows + db_rows
 
@@ -2054,6 +2058,14 @@ def list_pos_frontend():
             else f"Catalog unit price: ${price:.2f}. Total cost: ${po.total_cost:,.2f}."
         )
 
+        subtot = getattr(po, 'subtotal', None)
+        if not subtot or float(subtot) < 0.01:
+            subtot = first_item.subtotal if (first_item and hasattr(first_item, 'subtotal') and first_item.subtotal and float(first_item.subtotal) > 0.01) else round(po.total_cost / 1.18, 2)
+        t_rate = getattr(po, 'tax_rate', 0.18) or 0.18
+        t_amt = getattr(po, 'tax_amount', None)
+        if not t_amt or float(t_amt) < 0.01:
+            t_amt = first_item.tax_amount if (first_item and hasattr(first_item, 'tax_amount') and first_item.tax_amount and float(first_item.tax_amount) > 0.01) else round(po.total_cost - float(subtot), 2)
+
         result.append({
             "id":         po.po_id,
             "sku":        sku_id,
@@ -2061,9 +2073,13 @@ def list_pos_frontend():
             "supplier":   sup_name,
             "quantity":   qty,
             "unitCost":   round(float(price), 2),
+            "subtotal":   round(float(subtot), 2),
+            "taxRate":    round(float(t_rate), 4),
+            "taxAmount":  round(float(t_amt), 2),
             "totalCost":  round(float(po.total_cost), 2),
             "riskLevel":  risk,
             "status":     status_map.get(po.status, "pending"),
+            "reasoning":  getattr(po, 'reasoning', '') or '',
             "quotedByCall": quoted_by_call,
             "callQuotePrice": call_quote_price,
             "agentExplanation": {
@@ -2216,15 +2232,31 @@ def query(req: QueryRequest):
             read_only=True,
         )
         logger.info("Query answered | tools: %s", tools_called)
+        deduped_tools = list(dict.fromkeys(tools_called))
+        reasoning_text = (
+            f"Retrieved live data using {len(tools_called)} tool calls: "
+            + ", ".join(f"`{t}`" for t in deduped_tools)
+            + ". Real-time inventory and supply chain metrics were analyzed to generate this response."
+            if tools_called
+            else "Analyzed using current procurement domain parameters."
+        )
+        citations_list = [
+            {"source": f"Database: {tool}", "snippet": f"Executed live procurement tool: {tool}"}
+            for tool in deduped_tools
+        ]
         return QueryResponse(
             answer=answer,
-            tools_used=list(dict.fromkeys(tools_called)),  # deduplicated, order preserved
+            tools_used=deduped_tools,
+            reasoning=reasoning_text,
+            citations=citations_list,
         )
     except Exception as exc:
         logger.error("Query LLM failed: %s", exc)
         return QueryResponse(
             answer=f"(fallback) LLM error: {exc}",
             tools_used=[],
+            reasoning="Fallback mode triggered due to runtime error.",
+            citations=[],
         )
 
 
@@ -2332,6 +2364,245 @@ def parse_email(req: EmailParseRequest):
     broadcast_sync("EMAIL_PARSED", result.model_dump(mode="json"))
 
     return result
+
+
+# ---------------------------------------------------------------
+# Delivery Delay Impact Simulation (On-Time vs. Delayed Delivery)
+# ---------------------------------------------------------------
+
+class DeliveryDelaySimRequest(BaseModel):
+    raw_email_text: Optional[str] = None
+    sku_id: Optional[str] = None
+    delay_days: Optional[int] = None
+    supplier_name: Optional[str] = None
+    incoming_qty: Optional[int] = None
+
+
+@app.post("/api/simulate-delivery-delay")
+def simulate_delivery_delay_endpoint(req: DeliveryDelaySimRequest):
+    """
+    Dynamically simulate how a supplier delivery delay affects inventory over a 30-day projection.
+    Returns day-by-day On-Time vs. Delayed delivery trajectories, stockout gap,
+    shortage units, and financial impact computed directly from database records.
+    """
+    from database import (
+        SessionLocal, InventoryRecordDB, PurchaseOrderDB,
+        db_find_transfer_candidates, db_save_email_log, db_log_audit_event
+    )
+    from agent_tools import get_model_daily_predictions
+    from datetime import date, timedelta
+    import re
+
+    # 1. Extract parameters from email or explicit request
+    extracted_sku = req.sku_id
+    extracted_delay = req.delay_days
+    extracted_supplier = req.supplier_name
+    summary_text = ""
+
+    if req.raw_email_text:
+        text = req.raw_email_text
+        # Use LLM parser if available, or robust regex fallback
+        try:
+            if _client:
+                config = genai_types.GenerateContentConfig(
+                    system_instruction=(
+                        "Extract the material/SKU ID, supplier name, and delay duration in days from this email. "
+                        "Respond ONLY with a JSON object: {\"sku_id\": string, \"supplier_name\": string, \"delay_days\": number, \"summary\": string}."
+                    ),
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                )
+                resp = _client.models.generate_content(
+                    model=_GEMINI_MODEL,
+                    contents=text,
+                    config=config,
+                )
+                parsed_json = json.loads(resp.text)
+                extracted_sku = extracted_sku or parsed_json.get("sku_id")
+                extracted_delay = extracted_delay or parsed_json.get("delay_days")
+                extracted_supplier = extracted_supplier or parsed_json.get("supplier_name")
+                summary_text = parsed_json.get("summary", "")
+        except Exception as parse_err:
+            logger.warning("LLM email parse in delivery-delay sim failed, falling back to regex: %s", parse_err)
+
+        # Regex fallback for SKU and delay days
+        if not extracted_delay:
+            match_days = re.search(r"(\d+)[ -]day[s]?\s+delay", text, re.IGNORECASE) or re.search(r"delayed\s+by\s+(\d+)\s+day", text, re.IGNORECASE) or re.search(r"(\d+)\s+day", text, re.IGNORECASE)
+            if match_days:
+                extracted_delay = int(match_days.group(1))
+
+        if not extracted_sku:
+            match_sku = re.search(r"\b(P\d{4}|SKU[_-]?\d+)\b", text, re.IGNORECASE)
+            if match_sku:
+                extracted_sku = match_sku.group(1)
+
+    # 2. Normalize SKU format (e.g. SKU-001 -> P0001)
+    target_sku = (extracted_sku or "P0001").strip().upper()
+    if target_sku.startswith("SKU"):
+        digits = re.sub(r"\D", "", target_sku)
+        if digits:
+            target_sku = f"P{int(digits):04d}"
+
+    delay_days = max(1, int(extracted_delay or 7))
+
+    # 3. Retrieve dynamic inventory, pricing, and replenishment from SQL DB
+    current_stock = 500.0
+    reorder_level = 300.0
+    unit_price = 45.0
+    category_name = "General"
+    db_supplier_name = extracted_supplier or "Global Supply Partner"
+    replenishment_qty = float(req.incoming_qty or 0)
+
+    with SessionLocal() as db:
+        # Fetch latest inventory record for this SKU
+        rec = db.query(InventoryRecordDB).filter(InventoryRecordDB.sku_id == target_sku).order_by(InventoryRecordDB.date.desc()).first()
+        if rec:
+            current_stock = float(rec.inventory_level or 500)
+            reorder_level = float(rec.reorder_level or 300)
+            unit_price = float(rec.price or 45.0)
+            category_name = rec.category or "General"
+
+        # Check existing active POs for scheduled incoming quantity
+        if replenishment_qty <= 0:
+            active_po = db.query(PurchaseOrderDB).filter(PurchaseOrderDB.status.in_(["auto_approved", "pending_approval"])).all()
+            for po_row in active_po:
+                for item in (po_row.items or []):
+                    if item.get("sku_id") == target_sku and float(item.get("quantity", 0)) > 0:
+                        replenishment_qty = float(item.get("quantity"))
+                        if po_row.supplier_id:
+                            db_supplier_name = po_row.supplier_id
+                        break
+                if replenishment_qty > 0:
+                    break
+
+        if replenishment_qty <= 0:
+            replenishment_qty = max(reorder_level * 2.5, 1200.0)
+
+    # 4. Fetch daily forecasted demand from trained model or historical database
+    daily_preds = get_model_daily_predictions(target_sku, 30)
+    if daily_preds is None or len(daily_preds) < 30:
+        daily_preds = [max(10.0, current_stock * 0.08)] * 30
+    else:
+        daily_preds = [float(p) for p in daily_preds[:30]]
+
+    daily_demand_avg = round(sum(daily_preds) / len(daily_preds), 1)
+
+    # 5. Delivery timeline days
+    scheduled_arrival_day = 5
+    delayed_arrival_day = scheduled_arrival_day + delay_days
+
+    # 6. Simulate 30-day trajectories
+    stock_on_time = current_stock
+    stock_delayed = current_stock
+    shortage_units = 0.0
+    stockout_days_count = 0
+    on_time_stockout_day = None
+    delayed_stockout_day = None
+
+    today = date.today()
+    graph_data = []
+
+    for d in range(30):
+        point_date = (today + timedelta(days=d)).strftime("%b %d")
+        demand_today = daily_preds[d]
+
+        # On-Time delivery
+        shipment_ontime = replenishment_qty if d == scheduled_arrival_day else 0.0
+        stock_on_time = max(0.0, stock_on_time + shipment_ontime - demand_today)
+        if stock_on_time <= 0 and on_time_stockout_day is None:
+            on_time_stockout_day = d
+
+        # Delayed delivery
+        shipment_delayed = replenishment_qty if d == delayed_arrival_day else 0.0
+        net_delayed = stock_delayed + shipment_delayed - demand_today
+        if net_delayed < 0:
+            shortage_units += abs(net_delayed)
+            stockout_days_count += 1
+            if delayed_stockout_day is None:
+                delayed_stockout_day = d
+            stock_delayed = 0.0
+        else:
+            stock_delayed = net_delayed
+
+        graph_data.append({
+            "day": d,
+            "dayLabel": f"Day {d}",
+            "date": point_date,
+            "onTimeInventory": round(stock_on_time, 1),
+            "delayedInventory": round(stock_delayed, 1),
+            "reorderThreshold": round(reorder_level, 1),
+            "dailyDemand": round(demand_today, 1),
+            "shipmentOnTime": shipment_ontime,
+            "shipmentDelayed": shipment_delayed,
+            "isStockout": stock_delayed <= 0 and d < delayed_arrival_day,
+        })
+
+    financial_impact = round(shortage_units * unit_price, 2)
+
+    # 7. Check surplus transfers from other warehouses to mitigate
+    transfers = db_find_transfer_candidates(target_sku, int(shortage_units))
+
+    if not summary_text:
+        summary_text = (
+            f"Supplier delivery delayed by {delay_days} days. "
+            f"Inventory reaches stockout on Day {delayed_stockout_day or 'N/A'}, resulting in {int(shortage_units):,} "
+            f"unmet units and an estimated revenue loss of ${financial_impact:,.2f}."
+        )
+
+    # 8. Persist email delay record & audit event in database
+    try:
+        db_save_email_log(
+            supplier_id=db_supplier_name,
+            sku_id=target_sku,
+            delay_days=delay_days,
+            summary=summary_text,
+            raw_text=req.raw_email_text or f"Simulated delivery delay of {delay_days} days for {target_sku}.",
+        )
+        db_log_audit_event(
+            action="SUPPLIER_DELAY_SIMULATED",
+            entity_type="inventory_delivery",
+            entity_id=target_sku,
+            actor="Supply Chain Operator",
+            details={
+                "sku_id": target_sku,
+                "delay_days": delay_days,
+                "shortage_units": round(shortage_units, 1),
+                "financial_impact": financial_impact,
+                "scheduled_day": scheduled_arrival_day,
+                "delayed_day": delayed_arrival_day,
+            },
+            status="warning" if shortage_units > 0 else "info",
+        )
+    except Exception as dbe:
+        logger.warning("Could not persist delivery delay log: %s", dbe)
+
+    response_payload = {
+        "sku_id": target_sku,
+        "sku_name": f"{target_sku} ({category_name})",
+        "supplier_name": db_supplier_name,
+        "delay_days": delay_days,
+        "scheduled_arrival_day": scheduled_arrival_day,
+        "delayed_arrival_day": delayed_arrival_day,
+        "current_stock": round(current_stock, 1),
+        "reorder_threshold": round(reorder_level, 1),
+        "replenishment_quantity": round(replenishment_qty, 1),
+        "daily_demand_avg": daily_demand_avg,
+        "unit_price": unit_price,
+        "on_time_stockout_day": on_time_stockout_day,
+        "delayed_stockout_day": delayed_stockout_day,
+        "stockout_duration_days": stockout_days_count,
+        "shortage_units": round(shortage_units, 1),
+        "financial_impact": financial_impact,
+        "summary": summary_text,
+        "transfers_available": transfers[:3],
+        "graph_data": graph_data,
+    }
+
+    # Broadcast over WebSocket so UI updates live
+    broadcast_sync("DELIVERY_DELAY_SIMULATED", response_payload)
+
+    return response_payload
+
 
 
 # ---------------------------------------------------------------
@@ -2459,3 +2730,74 @@ def health():
         "outreach_service": _OUTREACH_AVAILABLE,
         "realtime_clients": len(manager.active_connections),
     }
+
+
+# ---------------------------------------------------------------
+# Project Budget endpoints
+# ---------------------------------------------------------------
+
+class BudgetSetRequest(BaseModel):
+    project_id: str
+    allocated_budget: float
+
+
+@app.get("/api/budget/{project_id}")
+def get_budget(project_id: str):
+    """Return the budget row for a project (404 if not found)."""
+    row = db_get_budget(project_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No budget found for project_id='{project_id}'")
+    return row
+
+
+@app.post("/api/budget")
+def set_budget(body: BudgetSetRequest):
+    """Create or update the budget for a project.
+    Sets remaining_budget = allocated_budget - spent_amount.
+    """
+    updated = db_set_budget(body.project_id, body.allocated_budget)
+    return updated
+
+
+# ---------------------------------------------------------------
+# Market Event & Disruption Management
+# ---------------------------------------------------------------
+
+class MarketEventRequest(BaseModel):
+    event_text: str
+
+
+@app.post("/events/report")
+def report_event_endpoint(req: MarketEventRequest):
+    """
+    Process a reported market event (e.g. news, raw text).
+    Extracts structured data, creates MarketEventDB record,
+    re-calculates affected POs, triggers Twilio calls if needed,
+    and broadcasts to WebSocket.
+    """
+    from services.market_events import process_market_event
+    try:
+        logger.info("Received market event report: %s", req.event_text)
+        result = process_market_event(req.event_text)
+        
+        # Broadcast to any active websockets
+        broadcast_sync("MARKET_EVENT_DETECTED", result)
+        
+        return {"status": "success", "data": result}
+    except Exception as e:
+        logger.error("Error processing market event: %s", e, exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/warehouses")
+def get_warehouses_endpoint():
+    """
+    Returns warehouse summary rolled up by store_id.
+    """
+    try:
+        from database import db_get_warehouses_summary
+        return db_get_warehouses_summary()
+    except Exception as e:
+        logger.error("Error fetching warehouses: %s", e, exc_info=True)
+        return []
+

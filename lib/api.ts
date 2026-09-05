@@ -181,6 +181,8 @@ export async function parseEmail(emailText: string): Promise<EmailParseResult> {
   return res.json();
 }
 
+export const parseSupplierEmail = parseEmail;
+
 import { CategorySummary, InventoryRow, InventoryDatasetStatus } from "../types";
 
 export async function fetchInventoryStatus(): Promise<InventoryDatasetStatus> {
@@ -193,9 +195,10 @@ export async function fetchInventoryStatus(): Promise<InventoryDatasetStatus> {
   return { has_dataset: false, filename: null, row_count: 0 };
 }
 
-export async function getInventoryCategorySummary(): Promise<CategorySummary[]> {
+export async function getInventoryCategorySummary(site_id?: string): Promise<CategorySummary[]> {
   try {
-    const res = await fetch("http://127.0.0.1:8000/api/inventory/summary");
+    const url = site_id ? `http://127.0.0.1:8000/api/inventory/summary?site_id=${encodeURIComponent(site_id)}` : "http://127.0.0.1:8000/api/inventory/summary";
+    const res = await fetch(url);
     if (res.ok) return await res.json();
   } catch (e) {
     console.error("getInventoryCategorySummary error:", e);
@@ -204,11 +207,13 @@ export async function getInventoryCategorySummary(): Promise<CategorySummary[]> 
   return [];
 }
 
-export async function fetchInventoryTransactions(category?: string | null): Promise<InventoryRow[]> {
+export async function fetchInventoryTransactions(category?: string | null, site_id?: string): Promise<InventoryRow[]> {
   try {
-    const url = category
-      ? `http://127.0.0.1:8000/api/inventory/transactions?category=${encodeURIComponent(category)}`
-      : "http://127.0.0.1:8000/api/inventory/transactions";
+    const params = new URLSearchParams();
+    if (category) params.append("category", category);
+    if (site_id) params.append("site_id", site_id);
+    const qs = params.toString();
+    const url = qs ? `http://127.0.0.1:8000/api/inventory/transactions?${qs}` : "http://127.0.0.1:8000/api/inventory/transactions";
     const res = await fetch(url);
     if (res.ok) return await res.json();
   } catch (e) {
@@ -258,5 +263,37 @@ export async function fetchAuditLogs(params?: {
     console.error("fetchAuditLogs error:", e);
   }
   return { total: 0, logs: [] };
+}
+
+export async function fetchWarehouses() {
+  const res = await fetch("http://127.0.0.1:8000/api/warehouses");
+  if (!res.ok) throw new Error("Failed to fetch warehouses");
+  return res.json();
+}
+
+export async function reportMarketEvent(text: string) {
+  const res = await fetch("http://127.0.0.1:8000/events/report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_text: text }),
+  });
+  if (!res.ok) throw new Error("Failed to report market event");
+  return res.json();
+}
+
+export async function simulateDeliveryDelay(payload: {
+  raw_email_text?: string;
+  sku_id?: string;
+  delay_days?: number;
+  supplier_name?: string;
+  incoming_qty?: number;
+}) {
+  const res = await fetch("http://127.0.0.1:8000/api/simulate-delivery-delay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("Failed to simulate delivery delay");
+  return res.json();
 }
 

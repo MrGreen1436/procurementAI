@@ -19,8 +19,12 @@ export interface PurchaseOrder {
   quantity: number;
   unitCost: number;
   totalCost: number;
+  subtotal?: number;
+  tax_rate?: number;
+  tax_amount?: number;
   riskLevel: RiskLevel;
   status: "pending" | "approved" | "rejected";
+  reasoning?: string;
   agentExplanation: {
     whySupplier: string;
     whyQuantity: string;
@@ -49,8 +53,9 @@ export interface InventoryPoint {
 
 export interface QueryResponse {
   answer: string;
-  reasoning: string;
-  citations: { source: string; snippet: string }[];
+  reasoning?: string;
+  citations?: { source: string; snippet: string }[];
+  tools_used?: string[];
 }
 
 export interface ScenarioInput {
@@ -58,6 +63,17 @@ export interface ScenarioInput {
   demandIncreasePct: number;
   disrupted_supplier_id?: string | null;
   extra_delay_days?: number | null;
+}
+
+export interface ForecastPoint {
+  date: string;
+  value: number;
+}
+
+export interface ForecastSeriesCollection {
+  xgboost: ForecastPoint[];
+  lstm: ForecastPoint[];
+  ets: ForecastPoint[];
 }
 
 export interface SKUShortageDetail {
@@ -68,6 +84,8 @@ export interface SKUShortageDetail {
   shortage_units: number;
   shortage_cost: number;
   recommended_action: string;
+  baselineForecasts?: ForecastSeriesCollection;
+  simulatedForecasts?: ForecastSeriesCollection;
 }
 
 export interface ScenarioResult {

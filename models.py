@@ -11,7 +11,7 @@ Merged from:
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, List
+from typing import Optional, Literal, List, Any
 from datetime import date, datetime
 
 
@@ -62,13 +62,19 @@ class POLineItem(BaseModel):
     sku_id: str
     quantity: int
     unit_price: float
+    subtotal: float = 0.0          # quantity × unit_price (pre-tax)
+    tax_rate: float = 0.18         # GST / VAT rate applied to this line
+    tax_amount: float = 0.0        # subtotal × tax_rate
 
 
 class PurchaseOrder(BaseModel):
     po_id: str
     supplier_id: str
     items: list[POLineItem]
-    total_cost: float
+    subtotal: float = 0.0          # sum of all line subtotals (pre-tax)
+    tax_rate: float = 0.18         # blended tax rate applied to the order
+    tax_amount: float = 0.0        # subtotal × tax_rate
+    total_cost: float              # final payable amount = subtotal + tax_amount
     reasoning: str
     status: Literal["auto_approved", "pending_approval", "rejected"]
     generated_by: str = "llm"
@@ -88,6 +94,8 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     tools_used: list[str] = []
+    reasoning: Optional[str] = ""
+    citations: list[dict] = []
 
 
 class EmailParseRequest(BaseModel):
@@ -125,6 +133,8 @@ class SKUShortageDetail(BaseModel):
     shortage_units: float
     shortage_cost: float
     recommended_action: str
+    baselineForecasts: Optional[dict[str, list[dict[str, Any]]]] = None
+    simulatedForecasts: Optional[dict[str, list[dict[str, Any]]]] = None
 
 
 class ScenarioResult(BaseModel):

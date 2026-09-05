@@ -7,6 +7,7 @@ import {
   adjustStock,
   fetchInventoryStatus,
   resetInventoryDataset,
+  fetchWarehouses,
 } from "@/lib/api";
 import { CategorySummary, InventoryRow, InventoryDatasetStatus } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -29,6 +30,7 @@ import {
   Layers,
   Database,
   Search,
+  Building2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -56,6 +58,9 @@ export default function InventoryPage() {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
 
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [selectedWarehouse, setSelectedWarehouse] = useState<string | null>(null);
+
   // Form state for manual adjustment
   const [storeId, setStoreId] = useState("");
   const [productId, setProductId] = useState("");
@@ -65,14 +70,16 @@ export default function InventoryPage() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [dsStatus, summary, txList] = await Promise.all([
+      const [dsStatus, summary, txList, whList] = await Promise.all([
         fetchInventoryStatus(),
-        getInventoryCategorySummary(),
-        fetchInventoryTransactions(),
+        getInventoryCategorySummary(selectedWarehouse || undefined),
+        fetchInventoryTransactions(selectedCategory || undefined, selectedWarehouse || undefined),
+        fetchWarehouses(),
       ]);
       setStatus(dsStatus);
       setCategories(summary);
       setTransactions(txList);
+      setWarehouses(whList);
     } catch (err) {
       console.error("Error loading inventory:", err);
     } finally {
@@ -82,7 +89,7 @@ export default function InventoryPage() {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [selectedWarehouse, selectedCategory]);
 
   const handleAdjustStock = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -207,6 +214,58 @@ export default function InventoryPage() {
             <div className="text-xs font-medium text-muted-foreground">Total Stock Value</div>
             <div className="text-2xl font-bold mt-1 text-emerald-400">{formatCurrency(totalValuation)}</div>
           </Card>
+        </div>
+      )}
+
+      {/* ── Warehouse Cards ── */}
+      {warehouses.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-2">
+              <Building2 className="h-4 w-4 text-primary" />
+              Project Sites / Warehouses
+            </h2>
+            {selectedWarehouse && (
+              <button
+                onClick={() => setSelectedWarehouse(null)}
+                className="text-xs text-primary hover:underline"
+              >
+                Clear filter
+              </button>
+            )}
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-thin">
+            {warehouses.map((wh) => (
+              <Card
+                key={wh.store_id}
+                onClick={() => setSelectedWarehouse(selectedWarehouse === wh.store_id ? null : wh.store_id)}
+                className={cn(
+                  "cursor-pointer shrink-0 w-64 p-4 shadow-sm transition-all border-l-4",
+                  selectedWarehouse === wh.store_id ? "ring-2 ring-primary/50" : "hover:bg-card/60",
+                  wh.status === "healthy" ? "border-l-emerald-500" :
+                  wh.status === "at_risk" ? "border-l-yellow-500" : "border-l-red-500"
+                )}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-bold text-base truncate">{wh.store_id}</div>
+                  <Badge
+                    variant={wh.status === "healthy" ? "default" : wh.status === "at_risk" ? "secondary" : "destructive"}
+                    className={cn(
+                      "text-[10px] px-1.5 py-0",
+                      wh.status === "healthy" && "bg-emerald-500/10 text-emerald-500 hover:bg-emerald-500/20",
+                      wh.status === "at_risk" && "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20",
+                    )}
+                  >
+                    {wh.status === "healthy" ? "Healthy" : wh.status === "at_risk" ? "At Risk" : "Critical"}
+                  </Badge>
+                </div>
+                <div className="mt-3 flex justify-between text-xs text-muted-foreground">
+                  <span>{wh.total_skus} Materials</span>
+                  <span>{wh.low_stock_count} Low Stock</span>
+                </div>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
 
